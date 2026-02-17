@@ -1,0 +1,41 @@
+# Build output
+/target/*
+
+# Cargo lock (keep for binaries, remove for libraries)
+# Cargo.lock
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated files
+*.orig
+*.bak
+
+# Test artifacts
+/tmp/
+*.db
+*.sqlite
+*.sqlite3
+
+# Profiling
+perf.data
+perf.data.old
+flamegraph.svg
+
+# Coverage
+tarpaulin-report.html
+lcov.info
+coverage/
+
+# Logs
+*.log
