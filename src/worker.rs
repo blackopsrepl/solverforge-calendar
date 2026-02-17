@@ -1,7 +1,6 @@
 use std::sync::mpsc;
 
 use anyhow::Result;
-use chrono::{Duration, Utc};
 
 use crate::models::{Calendar, Event, EventDependency, Project};
 
@@ -11,22 +10,14 @@ pub enum WorkerResult {
     CalendarsLoaded(Vec<Calendar>),
     ProjectsLoaded(Vec<Project>),
     EventsLoaded {
-        from: String,
-        to: String,
         events: Vec<Event>,
     },
     DependenciesLoaded(Vec<EventDependency>),
-    EventSaved(Event),
+    EventSaved(Box<Event>),
     EventDeleted(String),
     GoogleSyncComplete {
-        calendar_id: String,
         events_added: usize,
         events_updated: usize,
-    },
-    NotificationScheduled {
-        event_id: String,
-        title: String,
-        minutes_before: i64,
     },
     Error(String),
     StatusMessage(String),
@@ -132,11 +123,11 @@ impl Worker {
                 let from_str = format!("{} 00:00:00", start);
                 let to_str = format!("{} 23:59:59", end);
                 let events = crate::db::load_events_in_range(&conn, &from_str, &to_str)?;
-                Ok((from_str, to_str, events))
+                Ok(events)
             })();
             match result {
-                Ok((from, to, events)) => {
-                    let _ = tx.send(WorkerResult::EventsLoaded { from, to, events });
+                Ok(events) => {
+                    let _ = tx.send(WorkerResult::EventsLoaded { events });
                 }
                 Err(e) => {
                     let _ = tx.send(WorkerResult::Error(e.to_string()));
@@ -159,7 +150,7 @@ impl Worker {
             })();
             match result {
                 Ok(ev) => {
-                    let _ = tx.send(WorkerResult::EventSaved(ev));
+                    let _ = tx.send(WorkerResult::EventSaved(Box::new(ev)));
                 }
                 Err(e) => {
                     let _ = tx.send(WorkerResult::Error(e.to_string()));
@@ -202,7 +193,6 @@ impl Worker {
                 match crate::google::sync::sync_calendar(google_client.as_ref(), cal).await {
                     Ok((added, updated)) => {
                         let _ = tx.send(WorkerResult::GoogleSyncComplete {
-                            calendar_id: cal.id.clone(),
                             events_added: added,
                             events_updated: updated,
                         });

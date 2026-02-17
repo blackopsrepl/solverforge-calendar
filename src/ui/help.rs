@@ -1,7 +1,6 @@
 /* Help popup overlay — keybinding reference.  */
 
 use ratatui::{
-    layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},

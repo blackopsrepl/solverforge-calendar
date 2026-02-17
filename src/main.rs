@@ -7,9 +7,9 @@ use anyhow::Result;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Terminal};
 
 mod app;
 mod dag;
@@ -44,9 +44,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run the application inside the tokio runtime context
-    let result = rt.block_on(async {
-        run(&mut terminal, rt_handle).await
-    });
+    let result = rt.block_on(async { run(&mut terminal, rt_handle).await });
 
     // Restore terminal regardless of exit reason
     restore_terminal()?;
@@ -76,7 +74,7 @@ async fn run(
             Event::Mouse(_mouse) => {
                 // Mouse support: future enhancement
             }
-            Event::Resize(_, _) => {
+            Event::Resize => {
                 // Terminal resize: ratatui handles automatically on next draw
             }
             Event::Tick => {

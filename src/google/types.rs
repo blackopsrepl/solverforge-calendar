@@ -1,23 +1,7 @@
-use crate::models::{Calendar, CalendarSource, Event};
+use crate::models::Event;
 use anyhow::Result;
 use chrono::Utc;
 use uuid::Uuid;
-
-pub fn google_calendar_to_local(google_id: &str, name: &str, color_hex: &str) -> Calendar {
-    let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    Calendar {
-        id: Uuid::new_v4().to_string(),
-        name: name.to_string(),
-        color: color_hex.to_string(),
-        source: CalendarSource::Google,
-        google_id: Some(google_id.to_string()),
-        visible: true,
-        position: 99,
-        created_at: now.clone(),
-        updated_at: now,
-        deleted_at: None,
-    }
-}
 
 pub fn google_event_to_local(calendar_id: &str, gev: &serde_json::Value) -> Result<Event> {
     let google_id = gev["id"].as_str().unwrap_or("").to_string();
@@ -93,22 +77,4 @@ fn parse_google_datetime(s: &str) -> Result<String> {
     }
     // Fallback: already in our format
     Ok(s.to_string())
-}
-
-/* Google Calendar API color ID to hex mapping. */
-pub fn google_color_id_to_hex(color_id: &str) -> &'static str {
-    match color_id {
-        "1" => "#7986CB",  // Lavender
-        "2" => "#33B679",  // Sage
-        "3" => "#8E24AA",  // Grape
-        "4" => "#E67C73",  // Flamingo
-        "5" => "#F6BF26",  // Banana
-        "6" => "#F4511E",  // Tangerine
-        "7" => "#039BE5",  // Peacock
-        "8" => "#616161",  // Graphite
-        "9" => "#3F51B5",  // Blueberry
-        "10" => "#0B8043", // Basil
-        "11" => "#D50000", // Tomato
-        _ => "#82FB9C",    // fallback: accent green
-    }
 }

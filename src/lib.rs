@@ -1,5 +1,4 @@
 /* Library re-exports for test access.  */
-#![allow(dead_code, unused_variables, unused_imports)]
 
 pub mod app;
 pub mod dag;

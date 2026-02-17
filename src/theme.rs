@@ -10,12 +10,10 @@ pub struct Theme {
     pub accent: Color,
     pub background: Color,
     pub foreground: Color,
-    pub cursor: Color,
     pub selection_fg: Color,
     pub selection_bg: Color,
     pub color0: Color,
     pub color1: Color,
-    pub color2: Color,
     pub color3: Color,
     pub color4: Color,
     pub color5: Color,
@@ -23,12 +21,6 @@ pub struct Theme {
     pub color7: Color,
     pub color8: Color,
     pub color9: Color,
-    pub color10: Color,
-    pub color11: Color,
-    pub color12: Color,
-    pub color13: Color,
-    pub color14: Color,
-    pub color15: Color,
 }
 
 /* Calendar color palette: 8 distinct calendar colors cycling through the theme. */
@@ -47,17 +39,6 @@ impl Theme {
             .fg(self.selection_fg)
             .bg(self.selection_bg)
             .add_modifier(Modifier::BOLD)
-    }
-
-    pub fn folder_active(&self) -> Style {
-        Style::default()
-            .fg(self.background)
-            .bg(self.accent)
-            .add_modifier(Modifier::BOLD)
-    }
-
-    pub fn folder_inactive(&self) -> Style {
-        Style::default().fg(self.color7)
     }
 
     pub fn status_bar(&self) -> Style {
@@ -107,10 +88,6 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn header_value(&self) -> Style {
-        Style::default().fg(self.foreground)
-    }
-
     pub fn popup(&self) -> Style {
         Style::default().fg(self.foreground).bg(self.color0)
     }
@@ -146,13 +123,6 @@ impl Theme {
             6 => self.color9, // bright green variant
             _ => self.accent, // mint green
         }
-    }
-
-    // Style for a calendar bullet / dot with the given palette index.
-    pub fn calendar_dot(&self, index: usize) -> Style {
-        Style::default()
-            .fg(self.calendar_color(index))
-            .add_modifier(Modifier::BOLD)
     }
 
     // The pulsing "Now" beam line — accent color, bold.
@@ -305,12 +275,10 @@ pub fn parse_colors_toml(content: &str) -> anyhow::Result<Theme> {
         accent: get("accent")?,
         background: get("background")?,
         foreground: get("foreground")?,
-        cursor: get("cursor")?,
         selection_fg: get("selection_foreground")?,
         selection_bg: get("selection_background")?,
         color0: get("color0")?,
         color1: get("color1")?,
-        color2: get("color2")?,
         color3: get("color3")?,
         color4: get("color4")?,
         color5: get("color5")?,
@@ -318,12 +286,6 @@ pub fn parse_colors_toml(content: &str) -> anyhow::Result<Theme> {
         color7: get("color7")?,
         color8: get("color8")?,
         color9: get("color9")?,
-        color10: get("color10")?,
-        color11: get("color11")?,
-        color12: get("color12")?,
-        color13: get("color13")?,
-        color14: get("color14")?,
-        color15: get("color15")?,
     })
 }
 
@@ -343,12 +305,10 @@ pub fn fallback_theme() -> Theme {
         accent: Color::Rgb(130, 251, 156),
         background: Color::Rgb(11, 12, 22),
         foreground: Color::Rgb(221, 247, 255),
-        cursor: Color::Rgb(221, 247, 255),
         selection_fg: Color::Rgb(11, 12, 22),
         selection_bg: Color::Rgb(221, 247, 255),
         color0: Color::Rgb(11, 12, 22),
         color1: Color::Rgb(80, 248, 114),
-        color2: Color::Rgb(79, 232, 143),
         color3: Color::Rgb(80, 247, 212),
         color4: Color::Rgb(130, 157, 212),
         color5: Color::Rgb(134, 167, 223),
@@ -356,11 +316,5 @@ pub fn fallback_theme() -> Theme {
         color7: Color::Rgb(133, 225, 251),
         color8: Color::Rgb(106, 110, 149),
         color9: Color::Rgb(133, 255, 157),
-        color10: Color::Rgb(156, 247, 194),
-        color11: Color::Rgb(164, 255, 236),
-        color12: Color::Rgb(196, 210, 237),
-        color13: Color::Rgb(205, 219, 244),
-        color14: Color::Rgb(209, 255, 254),
-        color15: Color::Rgb(221, 247, 255),
     }
 }

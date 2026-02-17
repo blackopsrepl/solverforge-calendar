@@ -35,24 +35,6 @@ impl std::fmt::Display for CalendarSource {
     }
 }
 
-impl Calendar {
-    pub fn new_local(name: impl Into<String>, color: impl Into<String>) -> Self {
-        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        Self {
-            id: Uuid::new_v4().to_string(),
-            name: name.into(),
-            color: color.into(),
-            source: CalendarSource::Local,
-            google_id: None,
-            visible: true,
-            position: 0,
-            created_at: now.clone(),
-            updated_at: now,
-            deleted_at: None,
-        }
-    }
-}
-
 // ── Project ──────────────────────────────────────────────────────────
 
 /* A project groups events into a DAG with dependency ordering. Maps to `projects` table. */
@@ -65,21 +47,6 @@ pub struct Project {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
-}
-
-impl Project {
-    pub fn new(name: impl Into<String>, color: impl Into<String>) -> Self {
-        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        Self {
-            id: Uuid::new_v4().to_string(),
-            name: name.into(),
-            color: color.into(),
-            description: None,
-            created_at: now.clone(),
-            updated_at: now,
-            deleted_at: None,
-        }
-    }
 }
 
 // ── Event ────────────────────────────────────────────────────────────
@@ -198,71 +165,6 @@ impl std::fmt::Display for DependencyType {
         match self {
             DependencyType::Blocks => write!(f, "blocks"),
             DependencyType::Related => write!(f, "related"),
-        }
-    }
-}
-
-impl EventDependency {
-    pub fn new(
-        from_event_id: impl Into<String>,
-        to_event_id: impl Into<String>,
-        dep_type: DependencyType,
-    ) -> Self {
-        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        Self {
-            id: Uuid::new_v4().to_string(),
-            from_event_id: from_event_id.into(),
-            to_event_id: to_event_id.into(),
-            dependency_type: dep_type,
-            created_at: now.clone(),
-            updated_at: now,
-        }
-    }
-}
-
-// ── RecurrenceException ──────────────────────────────────────────────
-
-/* Modifies or deletes a single occurrence of a recurring event. */
-/* Maps to the `recurrence_exceptions` table. */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecurrenceException {
-    pub id: String,
-    pub event_id: String,
-    pub original_start: String, // the occurrence being overridden
-    pub replacement_event_id: Option<String>, // None = deleted occurrence
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-// ── SyncToken ────────────────────────────────────────────────────────
-
-/* Google Calendar incremental sync state. Maps to `sync_tokens` table. */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncToken {
-    pub id: String,
-    pub calendar_id: String,
-    pub sync_token: String,
-    pub synced_at: String,
-}
-
-// ── ProjectProgress ──────────────────────────────────────────────────
-
-/* Computed progress for a project (not stored, derived from events). */
-#[derive(Debug, Clone)]
-pub struct ProjectProgress {
-    pub project: Project,
-    pub total_events: usize,
-    pub completed_events: usize,
-    pub next_actionable: Option<Event>, // next event with all deps met
-    pub critical_path_length: usize,
-}
-
-impl ProjectProgress {
-    pub fn fraction(&self) -> f64 {
-        if self.total_events == 0 {
-            0.0
-        } else {
-            self.completed_events as f64 / self.total_events as f64
         }
     }
 }

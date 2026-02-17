@@ -1,7 +1,7 @@
 /* Day view — single-day vertical time grid (same engine as week_view, 1 column). Shows more detail per event: description, location, duration.  */
 /* Day view — single-day vertical time grid (same engine as week_view, 1 column). Shows more detail per event: description, location, duration.  */
 
-use chrono::{Datelike, Duration, Local};
+use chrono::Local;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Modifier,

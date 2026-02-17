@@ -1,7 +1,6 @@
 /* Google OAuth2 setup wizard popup.  */
 
 use ratatui::{
-    style::Modifier,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,

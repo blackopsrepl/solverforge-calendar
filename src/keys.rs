@@ -65,7 +65,6 @@ pub enum Action {
 
     // ── Google Calendar ──────────────────────────────────────────
     GoogleSync,
-    GoogleAuthSetup,
 
     // ── iCal import/export ───────────────────────────────────────
     ImportIcal,

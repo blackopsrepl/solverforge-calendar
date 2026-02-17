@@ -1,10 +1,9 @@
 /* Header bar (top, 1 row) + status bar (bottom, 1 row). Visual twin of solverforge-mail's status_bar.rs.  */
 /* Header bar (top, 1 row) + status bar (bottom, 1 row). Visual twin of solverforge-mail's status_bar.rs.  */
 
-use chrono::{Datelike, Local};
+use chrono::Local;
 use ratatui::{
     layout::Rect,
-    style::Modifier,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,

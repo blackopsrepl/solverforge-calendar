@@ -1,18 +1,13 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use tokio::sync::RwLock;
 
 use crate::dag::EventDag;
 use crate::keys::{Action, View};
 use crate::models::{Calendar, Event, EventDependency, Project};
 use crate::worker::{Worker, WorkerResult};
-
-// ── Braille spinner (identical to solverforge-mail) ──────────────────
-const SPINNER: &[&str] = &[
-    "\u{2801}", "\u{2809}", "\u{2819}", "\u{281b}", "\u{281e}", "\u{2836}", "\u{2834}", "\u{2824}",
-];
 
 // ── Form field definitions ────────────────────────────────────────────
 #[derive(Debug, Clone, PartialEq)]
@@ -282,12 +277,6 @@ impl App {
 
             // Google
             Action::GoogleSync => self.google_sync(),
-            Action::GoogleAuthSetup => {
-                self.google_auth_client_id.clear();
-                self.google_auth_client_secret.clear();
-                self.google_auth_field = 0;
-                self.view = View::GoogleAuth;
-            }
 
             // iCal
             Action::ImportIcal => {
@@ -316,12 +305,12 @@ impl App {
                 self.calendars = cals;
                 // Now load events for the current view window
                 self.worker.load_events(self.view_year, self.view_month);
-                self.loading = cals_loading_done(&self.calendars);
+                self.loading = false; // spinner shows until EventsLoaded arrives
             }
             WorkerResult::ProjectsLoaded(projs) => {
                 self.projects = projs;
             }
-            WorkerResult::EventsLoaded { events, .. } => {
+            WorkerResult::EventsLoaded { events } => {
                 self.events = events.clone();
                 // Update shared arc for notification task
                 let arc = self.events_arc.clone();
@@ -345,7 +334,6 @@ impl App {
                 self.set_status("Event deleted.", false);
             }
             WorkerResult::GoogleSyncComplete {
-                calendar_id,
                 events_added,
                 events_updated,
             } => {
@@ -366,7 +354,6 @@ impl App {
                 self.set_status(e, true);
                 self.loading = false;
             }
-            WorkerResult::NotificationScheduled { .. } => {}
         }
     }
 
@@ -496,7 +483,6 @@ impl App {
     // ── Event form ────────────────────────────────────────────────
 
     pub fn open_event_form(&mut self, event: Option<&Event>) {
-        let today = Local::now().date_naive();
         match event {
             None => {
                 // New event defaults
@@ -627,21 +613,17 @@ impl App {
                     if self.form_calendar_index + 1 < self.calendars.len() {
                         self.form_calendar_index += 1;
                     }
-                } else if c == '-' || c == 'h' {
-                    if self.form_calendar_index > 0 {
-                        self.form_calendar_index -= 1;
-                    }
+                } else if (c == '-' || c == 'h') && self.form_calendar_index > 0 {
+                    self.form_calendar_index -= 1;
                 }
             }
             Some(FormField::Project) => {
                 if c == '+' || c == 'l' {
-                    if self.form_project_index + 1 <= self.projects.len() {
+                    if self.form_project_index < self.projects.len() {
                         self.form_project_index += 1;
                     }
-                } else if c == '-' || c == 'h' {
-                    if self.form_project_index > 0 {
-                        self.form_project_index -= 1;
-                    }
+                } else if (c == '-' || c == 'h') && self.form_project_index > 0 {
+                    self.form_project_index -= 1;
                 }
             }
             Some(FormField::AllDay) => {
@@ -838,18 +820,14 @@ impl App {
         self.view = View::Month;
 
         // Run OAuth flow in background
-        let tx_clone = {
-            // We'll use a simple channel trick — spawn a task that sends back the token
-            let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
-            tokio::spawn(async move {
-                let result = crate::google::auth::run_oauth_flow(&client_id, &client_secret).await;
-                let _ = tx.send(result.map_err(|e| e.to_string()));
-            });
-            rx
-        };
-
-        // Poll result in next tick(s) — simplified: just store pending state
         // In a full impl, we'd have a dedicated WorkerResult::GoogleAuthComplete variant
+        tokio::spawn(async move {
+            let result = crate::google::auth::run_oauth_flow(&client_id, &client_secret).await;
+            if let Err(e) = result {
+                eprintln!("OAuth flow error: {}", e);
+            }
+        });
+
         self.set_status("Waiting for browser authorization…", false);
     }
 
@@ -927,10 +905,6 @@ impl App {
         self.status_is_error = is_error;
     }
 
-    pub fn spinner_frame(&self) -> &'static str {
-        SPINNER[(self.tick_count as usize) % SPINNER.len()]
-    }
-
     /// True if the cursor should be visible (500ms on, 500ms off at 250ms tick rate).
     pub fn cursor_visible(&self) -> bool {
         self.tick_count % 4 < 2
@@ -983,10 +957,6 @@ impl App {
             _ => {}
         }
     }
-}
-
-fn cals_loading_done(cals: &[Calendar]) -> bool {
-    false // always false — loading = true means spinner shows
 }
 
 fn days_in_month(year: i32, month: u32) -> u32 {

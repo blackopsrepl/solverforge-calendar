@@ -39,24 +39,6 @@ impl GoogleClient {
         Ok(())
     }
 
-    // Save a refresh token to keyring.
-    pub fn save_refresh_token(token: &str) -> Result<()> {
-        write_keyring(KEYRING_REFRESH_TOKEN_KEY, token)
-    }
-
-    // Remove all Google credentials from keyring.
-    pub fn revoke() -> Result<()> {
-        for key in &[
-            KEYRING_CLIENT_ID_KEY,
-            KEYRING_CLIENT_SECRET_KEY,
-            KEYRING_REFRESH_TOKEN_KEY,
-        ] {
-            if let Ok(entry) = Entry::new(KEYRING_SERVICE, key) {
-                let _ = entry.delete_credential();
-            }
-        }
-        Ok(())
-    }
 }
 
 fn read_keyring(key: &str) -> Option<String> {

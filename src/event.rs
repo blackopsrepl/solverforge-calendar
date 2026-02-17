@@ -11,7 +11,7 @@ use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind, Mo
 pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
-    Resize(u16, u16),
+    Resize,
     Tick,
 }
 
@@ -31,10 +31,10 @@ impl EventHandler {
             if event::poll(tick_rate).unwrap_or(false) {
                 match event::read() {
                     Ok(CrosstermEvent::Key(key)) => {
-                        if key.kind == KeyEventKind::Press {
-                            if event_tx.send(Event::Key(key)).is_err() {
-                                return;
-                            }
+                        if key.kind == KeyEventKind::Press
+                            && event_tx.send(Event::Key(key)).is_err()
+                        {
+                            return;
                         }
                     }
                     Ok(CrosstermEvent::Mouse(mouse)) => {
@@ -42,17 +42,15 @@ impl EventHandler {
                             return;
                         }
                     }
-                    Ok(CrosstermEvent::Resize(w, h)) => {
-                        if event_tx.send(Event::Resize(w, h)).is_err() {
+                    Ok(CrosstermEvent::Resize(_, _)) => {
+                        if event_tx.send(Event::Resize).is_err() {
                             return;
                         }
                     }
                     _ => {}
                 }
-            } else {
-                if event_tx.send(Event::Tick).is_err() {
-                    return;
-                }
+            } else if event_tx.send(Event::Tick).is_err() {
+                return;
             }
         });
 

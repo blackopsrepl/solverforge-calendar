@@ -1,7 +1,6 @@
 /* Multi-field event creation and editing form.  */
 
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -39,8 +38,6 @@ pub fn render_event_form(app: &App, frame: &mut Frame) {
     }
 
     let fields = &app.form_fields;
-    let field_height = 2u16; // label + value row each take 1 line, with 1 gap
-    let num_fields = fields.len() as u16;
 
     // Build all field lines
     let mut lines: Vec<Line> = Vec::new();
@@ -64,7 +61,6 @@ pub fn render_event_form(app: &App, frame: &mut Frame) {
             ""
         }; // █
 
-        let label = format!("  {:<14}", field.label());
         let value = field_value(app, field, cursor);
 
         let indicator = if is_focused { "▶ " } else { "  " };

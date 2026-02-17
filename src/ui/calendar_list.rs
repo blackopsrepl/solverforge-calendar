@@ -13,7 +13,6 @@ use crate::theme::theme;
 use crate::ui::util::{progress_bar, truncate};
 
 pub fn render_calendar_list(app: &App, frame: &mut Frame, area: Rect) {
-    let t = theme();
     let focused = app.sidebar_focused;
 
     // Split sidebar vertically: calendars on top, projects below

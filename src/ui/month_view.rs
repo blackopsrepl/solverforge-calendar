@@ -1,12 +1,12 @@
 /* Month grid view — 7-column calendar grid with colored dots, today highlight, adjacent month dimming, and expandable selected-day cell showing event titles.  */
 /* Month grid view — 7-column calendar grid with colored dots, today highlight, adjacent month dimming, and expandable selected-day cell showing event titles.  */
 
-use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
@@ -63,8 +63,14 @@ fn render_weekday_header(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
+struct DayCellFlags {
+    is_current_month: bool,
+    is_today: bool,
+    is_selected: bool,
+    is_weekend: bool,
+}
+
 fn render_grid(app: &App, frame: &mut Frame, area: Rect) {
-    let t = theme();
     let today = Local::now().date_naive();
 
     // First day of the displayed month
@@ -86,10 +92,12 @@ fn render_grid(app: &App, frame: &mut Frame, area: Rect) {
         for col in 0u16..7 {
             let day_offset = row as i64 * 7 + col as i64;
             let date = grid_start + Duration::days(day_offset);
-            let is_current_month = date.month() == app.view_month && date.year() == app.view_year;
-            let is_today = date == today;
-            let is_selected = date == app.focused_date;
-            let is_weekend = col >= 5;
+            let flags = DayCellFlags {
+                is_current_month: date.month() == app.view_month && date.year() == app.view_year,
+                is_today: date == today,
+                is_selected: date == app.focused_date,
+                is_weekend: col >= 5,
+            };
 
             let cell_rect = Rect {
                 x: area.x + col * col_width,
@@ -98,16 +106,7 @@ fn render_grid(app: &App, frame: &mut Frame, area: Rect) {
                 height: row_height,
             };
 
-            render_day_cell(
-                app,
-                frame,
-                cell_rect,
-                date,
-                is_current_month,
-                is_today,
-                is_selected,
-                is_weekend,
-            );
+            render_day_cell(app, frame, cell_rect, date, &flags);
         }
     }
 }
@@ -117,11 +116,14 @@ fn render_day_cell(
     frame: &mut Frame,
     area: Rect,
     date: NaiveDate,
-    is_current_month: bool,
-    is_today: bool,
-    is_selected: bool,
-    is_weekend: bool,
+    flags: &DayCellFlags,
 ) {
+    let DayCellFlags {
+        is_current_month,
+        is_today,
+        is_selected,
+        is_weekend,
+    } = *flags;
     let t = theme();
     let events = app.events_on_date(date);
 

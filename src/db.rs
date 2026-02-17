@@ -248,19 +248,6 @@ pub fn load_events_in_range(conn: &Connection, from: &str, to: &str) -> Result<V
     query_events(&mut stmt, &[from, to])
 }
 
-/* Load all non-deleted events for a specific calendar. */
-pub fn load_events_for_calendar(conn: &Connection, calendar_id: &str) -> Result<Vec<Event>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, calendar_id, project_id, title, description, location,
-                start_at, end_at, all_day, rrule, google_id, google_etag,
-                reminder_minutes, timezone, created_at, updated_at, deleted_at
-         FROM events
-         WHERE deleted_at IS NULL AND calendar_id = ?1
-         ORDER BY start_at",
-    )?;
-    query_events(&mut stmt, &[calendar_id])
-}
-
 fn query_events(stmt: &mut rusqlite::Statement, params: &[&str]) -> Result<Vec<Event>> {
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
         Ok(Event {
@@ -353,35 +340,6 @@ pub fn soft_delete_event(conn: &Connection, event_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn insert_calendar(conn: &Connection, cal: &Calendar) -> Result<()> {
-    conn.execute(
-        "INSERT INTO calendars (id, name, color, source, google_id, visible, position, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        rusqlite::params![
-            cal.id, cal.name, cal.color, cal.source.to_string(),
-            cal.google_id, cal.visible as i64, cal.position,
-            cal.created_at, cal.updated_at,
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn insert_project(conn: &Connection, proj: &Project) -> Result<()> {
-    conn.execute(
-        "INSERT INTO projects (id, name, color, description, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![
-            proj.id,
-            proj.name,
-            proj.color,
-            proj.description,
-            proj.created_at,
-            proj.updated_at
-        ],
-    )?;
-    Ok(())
-}
-
 pub fn load_dependencies(conn: &Connection) -> Result<Vec<EventDependency>> {
     let mut stmt = conn.prepare(
         "SELECT id, from_event_id, to_event_id, dependency_type, created_at, updated_at
@@ -405,31 +363,6 @@ pub fn load_dependencies(conn: &Connection) -> Result<Vec<EventDependency>> {
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
-}
-
-pub fn insert_dependency(conn: &Connection, dep: &EventDependency) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO event_dependencies
-             (id, from_event_id, to_event_id, dependency_type, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![
-            dep.id,
-            dep.from_event_id,
-            dep.to_event_id,
-            dep.dependency_type.to_string(),
-            dep.created_at,
-            dep.updated_at,
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn delete_dependency(conn: &Connection, from_id: &str, to_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM event_dependencies WHERE from_event_id=?1 AND to_event_id=?2",
-        [from_id, to_id],
-    )?;
-    Ok(())
 }
 
 pub fn upsert_sync_token(conn: &Connection, calendar_id: &str, token: &str) -> Result<()> {

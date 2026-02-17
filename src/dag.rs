@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::models::{DependencyType, Event, EventDependency};
+use crate::models::{DependencyType, EventDependency};
 
 /* A DAG of events connected by dependency edges. */
 /* `edges[A]` = set of event IDs that A **blocks** (A must finish before they start). */
@@ -50,16 +50,6 @@ impl EventDag {
         Ok(())
     }
 
-    // Remove a directed edge.
-    pub fn remove_edge(&mut self, from: &str, to: &str) {
-        if let Some(blocked) = self.edges.get_mut(from) {
-            blocked.remove(to);
-        }
-        if let Some(blockers) = self.reverse.get_mut(to) {
-            blockers.remove(from);
-        }
-    }
-
     // True if `from` can reach `to` through forward edges (BFS).
     pub fn can_reach(&self, from: &str, to: &str) -> bool {
         if from == to {
@@ -88,7 +78,8 @@ impl EventDag {
     // Topological sort of all nodes using Kahn's algorithm.
     // Returns nodes in dependency order (blockers before blocked).
     // Returns `None` if the graph has a cycle (shouldn't happen if `add_edge` is used).
-    pub fn topological_sort(&self) -> Option<Vec<String>> {
+    #[cfg(test)]
+    fn topological_sort(&self) -> Option<Vec<String>> {
         let all_nodes: HashSet<&String> = self.edges.keys().chain(self.reverse.keys()).collect();
 
         // Compute in-degrees
@@ -96,7 +87,7 @@ impl EventDag {
         for node in &all_nodes {
             in_degree.entry(node).or_insert(0);
         }
-        for (_, blocked_set) in &self.edges {
+        for blocked_set in self.edges.values() {
             for blocked in blocked_set {
                 *in_degree.entry(blocked).or_insert(0) += 1;
             }
@@ -156,11 +147,7 @@ impl EventDag {
             .collect()
     }
 
-    // Critical path length from a given start node (longest dependency chain).
-    pub fn critical_path_from(&self, start: &str) -> usize {
-        self.longest_path(start)
-    }
-
+    #[cfg(test)]
     fn longest_path(&self, node: &str) -> usize {
         if let Some(blocked_set) = self.edges.get(node) {
             if blocked_set.is_empty() {
@@ -176,66 +163,9 @@ impl EventDag {
         }
     }
 
-    // Overall critical path length of the entire DAG.
-    pub fn max_critical_path(&self) -> usize {
-        // Start from nodes with no incoming edges (roots)
-        let roots: Vec<&String> = self
-            .edges
-            .keys()
-            .filter(|node| self.reverse.get(*node).map_or(true, |r| r.is_empty()))
-            .collect();
-
-        roots
-            .iter()
-            .map(|root| self.longest_path(root))
-            .max()
-            .unwrap_or(0)
-    }
-
-    // All events that block the given event (direct + transitive predecessors).
-    pub fn all_blockers(&self, event_id: &str) -> HashSet<String> {
-        let mut result = HashSet::new();
-        let mut queue = VecDeque::new();
-        queue.push_back(event_id.to_string());
-        while let Some(node) = queue.pop_front() {
-            if let Some(blockers) = self.reverse.get(&node) {
-                for b in blockers {
-                    if result.insert(b.clone()) {
-                        queue.push_back(b.clone());
-                    }
-                }
-            }
-        }
-        result
-    }
-
-    // All events blocked by the given event (direct + transitive dependents).
-    pub fn all_blocked_by(&self, event_id: &str) -> HashSet<String> {
-        let mut result = HashSet::new();
-        let mut queue = VecDeque::new();
-        queue.push_back(event_id.to_string());
-        while let Some(node) = queue.pop_front() {
-            if let Some(blocked_set) = self.edges.get(&node) {
-                for b in blocked_set {
-                    if result.insert(b.clone()) {
-                        queue.push_back(b.clone());
-                    }
-                }
-            }
-        }
-        result
-    }
-
-    // Returns events in topological order filtered to those in `project_event_ids`.
-    pub fn project_order(&self, project_event_ids: &HashSet<String>) -> Vec<String> {
-        if let Some(sorted) = self.topological_sort() {
-            sorted
-                .into_iter()
-                .filter(|id| project_event_ids.contains(id))
-                .collect()
-        } else {
-            project_event_ids.iter().cloned().collect()
-        }
+    #[cfg(test)]
+    fn critical_path_from(&self, start: &str) -> usize {
+        self.longest_path(start)
     }
 
     // Direct blockers of an event (one hop).
@@ -245,34 +175,6 @@ impl EventDag {
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
     }
-
-    // Direct dependents of an event (one hop).
-    pub fn direct_blocked_by(&self, event_id: &str) -> Vec<String> {
-        self.edges
-            .get(event_id)
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-}
-
-/* Compute project progress from a list of events and the DAG. */
-/* An event is considered "complete" if it has `deleted_at` set */
-/* (placeholder — in real usage, a dedicated `completed` column or status field would be used). */
-pub fn compute_project_progress(
-    events: &[Event],
-    _dag: &EventDag,
-    completed_ids: &HashSet<String>,
-) -> (usize, usize, usize) {
-    let total = events.len();
-    let completed = events
-        .iter()
-        .filter(|e| completed_ids.contains(&e.id))
-        .count();
-    let actionable = events
-        .iter()
-        .filter(|e| !completed_ids.contains(&e.id))
-        .count(); // simplified
-    (total, completed, actionable)
 }
 
 #[cfg(test)]

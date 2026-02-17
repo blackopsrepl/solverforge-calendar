@@ -1,11 +1,11 @@
 /* Agenda view — chronological list of upcoming events grouped by day.  */
 
-use chrono::{Duration, Local, NaiveDate};
+use chrono::{Local, NaiveDate};
 use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
@@ -70,7 +70,6 @@ pub fn render_agenda(app: &App, frame: &mut Frame, area: Rect) {
 
         // Event line: ▌ HH:MM-HH:MM  TITLE  [calendar]  [P]
         let cal_idx = app.calendar_index_for(&ev.calendar_id);
-        let cal_color = t.calendar_color(cal_idx);
         let rail_style = t.event_rail(cal_idx);
 
         let time_str = if ev.all_day {

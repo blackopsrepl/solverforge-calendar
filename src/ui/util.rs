@@ -60,11 +60,6 @@ pub fn format_duration(minutes: i64) -> String {
     }
 }
 
-/* Format a NaiveTime as "HH:MM". */
-pub fn format_time_hhmm(hour: u32, minute: u32) -> String {
-    format!("{:02}:{:02}", hour, minute)
-}
-
 /* Returns "Today", "Tomorrow", "Yesterday", or formatted date. */
 pub fn friendly_date(date: chrono::NaiveDate) -> String {
     let today = chrono::Local::now().date_naive();
@@ -79,17 +74,6 @@ pub fn friendly_date(date: chrono::NaiveDate) -> String {
 
 /* Short weekday names for the month grid header. */
 pub const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-/* Full weekday names. */
-pub const WEEKDAY_FULL: [&str; 7] = [
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-];
 
 /* Month name. */
 pub fn month_name(month: u32) -> &'static str {

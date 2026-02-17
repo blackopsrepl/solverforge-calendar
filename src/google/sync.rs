@@ -99,29 +99,13 @@ async fn fetch_events(
         urlenccode(google_cal_id)
     );
 
-    let mut req = http
-        .get(&url)
-        .bearer_auth(access_token)
-        .query(&[("maxResults", "2500"), ("singleEvents", "true")]);
-
-    if let Some(token) = sync_token {
-        req = req.query(&[("syncToken", token)]);
-    } else {
-        // Full sync: fetch events from 1 year ago
-        let min_time = (chrono::Utc::now() - chrono::Duration::days(365))
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
-        req = req.query(&[("timeMin", min_time.as_str())]);
-    }
-
     let mut all_events = Vec::new();
     let mut page_token: Option<String> = None;
     let mut new_sync_token: Option<String> = None;
-    let mut req_url = url.clone();
 
     loop {
         let mut current_req = http
-            .get(&req_url)
+            .get(&url)
             .bearer_auth(access_token)
             .query(&[("maxResults", "2500"), ("singleEvents", "true")]);
 
@@ -131,7 +115,7 @@ async fn fetch_events(
             let min_time = (chrono::Utc::now() - chrono::Duration::days(365))
                 .format("%Y-%m-%dT%H:%M:%SZ")
                 .to_string();
-            current_req = current_req.query(&[("timeMin", min_time.as_str())]);
+            current_req = current_req.query(&[("timeMin", min_time)]);
         }
 
         if let Some(pt) = &page_token {
