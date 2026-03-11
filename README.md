@@ -2,6 +2,8 @@
 
 A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG-linked events.
 
+![SolverForge Calendar](screenshot.png)
+
 ## Quick Start
 
 ```bash
