@@ -2,6 +2,8 @@
 
 A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG-linked events.
 
+[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
+
 ![SolverForge Calendar](screenshot.png)
 
 ## Quick Start
