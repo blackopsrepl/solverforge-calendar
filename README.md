@@ -9,12 +9,15 @@ A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG
 ## Quick Start
 
 ```bash
-# Build and run
+# Build both binaries
 cargo build --release
 ./target/release/solverforge-calendar
 
 # Or run directly
 cargo run
+
+# JSON-first CLI for automation / OpenClaw
+cargo run --bin solverforge-calendar-cli -- calendars list
 ```
 
 ## Features
@@ -27,6 +30,7 @@ cargo run
 - **Local SQLite database** - Events, calendars, projects stored in `~/.local/share/solverforge/calendar.db`
 - **iCal import/export** - Standard `.ics` support
 - **Desktop notifications** - Reminder alerts via libnotify
+- **Pure CLI companion** - JSON-first CRUD for calendars, projects, events, and dependencies; ideal for OpenClaw tool usage
 - **SolverForge theme** - Reads hackerman palette from `colors.toml`
 
 ## Keybindings
@@ -54,6 +58,52 @@ cargo run
 
 ### Quick Add
 - `a` - Quick add event (command-line style)
+
+## CLI Automation
+
+`solverforge-calendar-cli` is a pure CLI companion binary intended for scripting and tool integrations such as OpenClaw. Every successful command prints JSON to stdout, and failures print a JSON error object to stderr.
+
+```bash
+# Calendars
+cargo run --bin solverforge-calendar-cli -- calendars list
+cargo run --bin solverforge-calendar-cli -- calendars create --name Work --color '#50f872'
+
+# Projects
+cargo run --bin solverforge-calendar-cli -- projects create --name Launch --color '#ff00aa'
+
+# Events
+cargo run --bin solverforge-calendar-cli -- events list
+cargo run --bin solverforge-calendar-cli -- events create \
+  --calendar-id <calendar-id> \
+  --title 'Planning Session' \
+  --start-at '2026-03-22 15:00:00' \
+  --end-at '2026-03-22 16:00:00'
+
+# Dependencies
+cargo run --bin solverforge-calendar-cli -- dependencies create \
+  --from-event-id <event-a> \
+  --to-event-id <event-b>
+```
+
+Available CRUD groups:
+
+- `calendars`: `list`, `get`, `create`, `update`, `delete`
+- `projects`: `list`, `get`, `create`, `update`, `delete`
+- `events`: `list`, `get`, `create`, `update`, `delete`
+- `dependencies`: `list`, `get`, `create`, `update`, `delete`
+- `google`: `sync` (all Google calendars, or a specific one via `--calendar-id`)
+
+The event list command also supports `--from` and `--to` with `YYYY-MM-DD HH:MM:SS` timestamps for range-based reads.
+
+Google sync from CLI:
+
+```bash
+# Sync all Google-sourced calendars configured in local DB
+cargo run --bin solverforge-calendar-cli -- google sync
+
+# Sync one Google-sourced calendar by local calendar id
+cargo run --bin solverforge-calendar-cli -- google sync --calendar-id <calendar-id>
+```
 
 ## Google Calendar Setup
 

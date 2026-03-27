@@ -214,6 +214,10 @@ pub fn load_calendars(conn: &Connection) -> Result<Vec<Calendar>> {
         .map_err(Into::into)
 }
 
+fn now_timestamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 pub fn load_projects(conn: &Connection) -> Result<Vec<Project>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, color, description, created_at, updated_at, deleted_at
@@ -363,6 +367,264 @@ pub fn load_dependencies(conn: &Connection) -> Result<Vec<EventDependency>> {
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+pub fn load_events(conn: &Connection) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, calendar_id, project_id, title, description, location,
+                start_at, end_at, all_day, rrule, google_id, google_etag,
+                reminder_minutes, timezone, created_at, updated_at, deleted_at
+         FROM events
+         WHERE deleted_at IS NULL
+         ORDER BY start_at, title",
+    )?;
+    query_events(&mut stmt, &[])
+}
+
+pub fn get_calendar(conn: &Connection, calendar_id: &str) -> Result<Option<Calendar>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, source, google_id, visible, position,
+                created_at, updated_at, deleted_at
+         FROM calendars
+         WHERE id = ?1 AND deleted_at IS NULL",
+    )?;
+
+    let calendar = stmt
+        .query_row([calendar_id], |row| {
+            let source_str: String = row.get(3)?;
+            let source = if source_str == "google" {
+                CalendarSource::Google
+            } else {
+                CalendarSource::Local
+            };
+            Ok(Calendar {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                source,
+                google_id: row.get(4)?,
+                visible: row.get::<_, i64>(5)? != 0,
+                position: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                deleted_at: row.get(9)?,
+            })
+        })
+        .optional()?;
+
+    Ok(calendar)
+}
+
+pub fn insert_calendar(conn: &Connection, calendar: &Calendar) -> Result<()> {
+    conn.execute(
+        "INSERT INTO calendars
+             (id, name, color, source, google_id, visible, position, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            calendar.id,
+            calendar.name,
+            calendar.color,
+            calendar.source.to_string(),
+            calendar.google_id,
+            calendar.visible as i64,
+            calendar.position,
+            calendar.created_at,
+            calendar.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_calendar(conn: &Connection, calendar: &Calendar) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE calendars SET
+             name = ?2,
+             color = ?3,
+             source = ?4,
+             google_id = ?5,
+             visible = ?6,
+             position = ?7,
+             updated_at = ?8
+         WHERE id = ?1",
+        rusqlite::params![
+            calendar.id,
+            calendar.name,
+            calendar.color,
+            calendar.source.to_string(),
+            calendar.google_id,
+            calendar.visible as i64,
+            calendar.position,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn soft_delete_calendar(conn: &Connection, calendar_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE calendars SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+        [calendar_id, &now],
+    )?;
+    Ok(())
+}
+
+pub fn get_project(conn: &Connection, project_id: &str) -> Result<Option<Project>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, description, created_at, updated_at, deleted_at
+         FROM projects
+         WHERE id = ?1 AND deleted_at IS NULL",
+    )?;
+
+    let project = stmt
+        .query_row([project_id], |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                description: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                deleted_at: row.get(6)?,
+            })
+        })
+        .optional()?;
+
+    Ok(project)
+}
+
+pub fn insert_project(conn: &Connection, project: &Project) -> Result<()> {
+    conn.execute(
+        "INSERT INTO projects
+             (id, name, color, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            project.id,
+            project.name,
+            project.color,
+            project.description,
+            project.created_at,
+            project.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_project(conn: &Connection, project: &Project) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE projects SET
+             name = ?2,
+             color = ?3,
+             description = ?4,
+             updated_at = ?5
+         WHERE id = ?1",
+        rusqlite::params![
+            project.id,
+            project.name,
+            project.color,
+            project.description,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn soft_delete_project(conn: &Connection, project_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE projects SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+        [project_id, &now],
+    )?;
+    Ok(())
+}
+
+pub fn get_event(conn: &Connection, event_id: &str) -> Result<Option<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, calendar_id, project_id, title, description, location,
+                start_at, end_at, all_day, rrule, google_id, google_etag,
+                reminder_minutes, timezone, created_at, updated_at, deleted_at
+         FROM events
+         WHERE id = ?1 AND deleted_at IS NULL",
+    )?;
+
+    let rows = query_events(&mut stmt, &[event_id])?;
+    Ok(rows.into_iter().next())
+}
+
+pub fn get_dependency(conn: &Connection, dependency_id: &str) -> Result<Option<EventDependency>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, from_event_id, to_event_id, dependency_type, created_at, updated_at
+         FROM event_dependencies
+         WHERE id = ?1",
+    )?;
+
+    let dependency = stmt
+        .query_row([dependency_id], |row| {
+            let dep_type_str: String = row.get(3)?;
+            let dependency_type = if dep_type_str == "blocks" {
+                DependencyType::Blocks
+            } else {
+                DependencyType::Related
+            };
+            Ok(EventDependency {
+                id: row.get(0)?,
+                from_event_id: row.get(1)?,
+                to_event_id: row.get(2)?,
+                dependency_type,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .optional()?;
+
+    Ok(dependency)
+}
+
+pub fn insert_dependency(conn: &Connection, dependency: &EventDependency) -> Result<()> {
+    conn.execute(
+        "INSERT INTO event_dependencies
+             (id, from_event_id, to_event_id, dependency_type, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            dependency.id,
+            dependency.from_event_id,
+            dependency.to_event_id,
+            dependency.dependency_type.to_string(),
+            dependency.created_at,
+            dependency.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_dependency(conn: &Connection, dependency: &EventDependency) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE event_dependencies SET
+             from_event_id = ?2,
+             to_event_id = ?3,
+             dependency_type = ?4,
+             updated_at = ?5
+         WHERE id = ?1",
+        rusqlite::params![
+            dependency.id,
+            dependency.from_event_id,
+            dependency.to_event_id,
+            dependency.dependency_type.to_string(),
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_dependency(conn: &Connection, dependency_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM event_dependencies WHERE id = ?1",
+        [dependency_id],
+    )?;
+    Ok(())
 }
 
 pub fn upsert_sync_token(conn: &Connection, calendar_id: &str, token: &str) -> Result<()> {
