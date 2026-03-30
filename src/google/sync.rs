@@ -1,37 +1,58 @@
 use anyhow::{Context, Result};
+use rusqlite::Connection;
 
 use crate::google::auth::GoogleClient;
 use crate::models::Calendar;
 
+pub struct CalendarSyncDelta {
+    pub events_json: Vec<serde_json::Value>,
+    pub new_sync_token: Option<String>,
+}
+
 /* Sync a single Google Calendar into the local database. */
 /* Returns (events_added, events_updated). */
 pub async fn sync_calendar(client: &GoogleClient, calendar: &Calendar) -> Result<(usize, usize)> {
+    let conn = crate::db::open()?;
+    let sync_token = crate::db::get_sync_token(&conn, &calendar.id)?;
+    let delta = fetch_calendar_delta(client, calendar, sync_token.as_deref()).await?;
+    apply_calendar_sync(&conn, calendar, delta)
+}
+
+pub async fn fetch_calendar_delta(
+    client: &GoogleClient,
+    calendar: &Calendar,
+    sync_token: Option<&str>,
+) -> Result<CalendarSyncDelta> {
     let google_cal_id = calendar
         .google_id
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("calendar '{}' has no google_id", calendar.name))?;
 
-    // Get an access token
     let access_token = refresh_access_token(client).await?;
 
-    // Check for an existing sync token (incremental sync)
-    let conn = crate::db::open()?;
-    let sync_token = crate::db::get_sync_token(&conn, &calendar.id)?;
-    drop(conn); // release before async work
-
     let (events_json, new_sync_token) =
-        fetch_events(&access_token, google_cal_id, sync_token.as_deref()).await?;
+        fetch_events(&access_token, google_cal_id, sync_token).await?;
 
+    Ok(CalendarSyncDelta {
+        events_json,
+        new_sync_token,
+    })
+}
+
+pub fn apply_calendar_sync(
+    conn: &Connection,
+    calendar: &Calendar,
+    delta: CalendarSyncDelta,
+) -> Result<(usize, usize)> {
     let mut added = 0;
     let mut updated = 0;
 
-    let conn = crate::db::open()?;
-    for gev in &events_json {
+    for gev in &delta.events_json {
         // Skip cancelled events (soft-delete them locally)
         if gev["status"].as_str() == Some("cancelled") {
             if let Some(gid) = gev["id"].as_str() {
                 // Find local event by google_id and soft-delete it
-                let _ = soft_delete_by_google_id(&conn, gid);
+                let _ = soft_delete_by_google_id(conn, gid);
             }
             continue;
         }
@@ -40,12 +61,12 @@ pub async fn sync_calendar(client: &GoogleClient, calendar: &Calendar) -> Result
             Ok(event) => {
                 // Check if we already have this event (by google_id)
                 let exists =
-                    event_exists_by_google_id(&conn, event.google_id.as_deref().unwrap_or(""))?;
+                    event_exists_by_google_id(conn, event.google_id.as_deref().unwrap_or(""))?;
                 if exists {
-                    let _ = update_event_by_google_id(&conn, &event);
+                    let _ = update_event_by_google_id(conn, &event);
                     updated += 1;
                 } else {
-                    let _ = crate::db::insert_event(&conn, &event);
+                    let _ = crate::db::insert_event(conn, &event);
                     added += 1;
                 }
             }
@@ -57,8 +78,8 @@ pub async fn sync_calendar(client: &GoogleClient, calendar: &Calendar) -> Result
     }
 
     // Persist new sync token
-    if let Some(token) = new_sync_token {
-        crate::db::upsert_sync_token(&conn, &calendar.id, &token)?;
+    if let Some(token) = delta.new_sync_token {
+        crate::db::upsert_sync_token(conn, &calendar.id, &token)?;
     }
 
     Ok((added, updated))
@@ -204,4 +225,69 @@ fn urlenccode(s: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use tempfile::TempDir;
+
+    use super::{apply_calendar_sync, CalendarSyncDelta};
+    use crate::{
+        db,
+        models::{Calendar, CalendarSource},
+    };
+
+    #[test]
+    fn apply_calendar_sync_uses_supplied_connection() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("calendar.db");
+        let conn = db::open_at(&path)?;
+
+        let calendar = Calendar {
+            id: "google-cal".to_string(),
+            name: "Google".to_string(),
+            color: "#50f872".to_string(),
+            source: CalendarSource::Google,
+            google_id: Some("google-cal-id".to_string()),
+            visible: true,
+            position: 0,
+            created_at: "2026-03-30 10:00:00".to_string(),
+            updated_at: "2026-03-30 10:00:00".to_string(),
+            deleted_at: None,
+        };
+        db::insert_calendar(&conn, &calendar)?;
+
+        let delta = CalendarSyncDelta {
+            events_json: vec![serde_json::json!({
+                "id": "google-event-1",
+                "summary": "Imported event",
+                "etag": "\"etag-1\"",
+                "status": "confirmed",
+                "start": {
+                    "dateTime": "2026-03-30T09:00:00Z",
+                    "timeZone": "UTC"
+                },
+                "end": {
+                    "dateTime": "2026-03-30T10:00:00Z"
+                }
+            })],
+            new_sync_token: Some("sync-token-1".to_string()),
+        };
+
+        let (added, updated) = apply_calendar_sync(&conn, &calendar, delta)?;
+        assert_eq!(added, 1);
+        assert_eq!(updated, 0);
+
+        let events = db::load_events(&conn)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].calendar_id, calendar.id);
+        assert_eq!(events[0].google_id.as_deref(), Some("google-event-1"));
+        assert_eq!(
+            db::get_sync_token(&conn, &calendar.id)?.as_deref(),
+            Some("sync-token-1")
+        );
+
+        Ok(())
+    }
 }

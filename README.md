@@ -13,10 +13,10 @@ A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG
 cargo build --release
 ./target/release/solverforge-calendar
 
-# Or run directly
+# Human-facing TUI entrypoint
 cargo run
 
-# JSON-first CLI for automation / OpenClaw
+# Agent-facing CLI entrypoint
 cargo run --bin solverforge-calendar-cli -- calendars list
 ```
 
@@ -30,7 +30,7 @@ cargo run --bin solverforge-calendar-cli -- calendars list
 - **Local SQLite database** - Events, calendars, projects stored in `~/.local/share/solverforge/calendar.db`
 - **iCal import/export** - Standard `.ics` support
 - **Desktop notifications** - Reminder alerts via libnotify
-- **Pure CLI companion** - JSON-first CRUD for calendars, projects, events, and dependencies; ideal for OpenClaw tool usage
+- **Pure CLI companion** - JSON-first CRUD and Google sync for agents and automation
 - **SolverForge theme** - Reads hackerman palette from `colors.toml`
 
 ## Keybindings
@@ -61,49 +61,41 @@ cargo run --bin solverforge-calendar-cli -- calendars list
 
 ## CLI Automation
 
-`solverforge-calendar-cli` is a pure CLI companion binary intended for scripting and tool integrations such as OpenClaw. Every successful command prints JSON to stdout, and failures print a JSON error object to stderr.
+`solverforge-calendar-cli` is a non-interactive companion binary for agents and scripts. Successful commands write JSON to stdout, failures write JSON to stderr, and destructive actions require explicit flags rather than prompts.
 
 ```bash
+# Stable wrapper for agents
+./scripts/solverforge-calendar-cli calendars list
+
 # Calendars
 cargo run --bin solverforge-calendar-cli -- calendars list
 cargo run --bin solverforge-calendar-cli -- calendars create --name Work --color '#50f872'
 
-# Projects
-cargo run --bin solverforge-calendar-cli -- projects create --name Launch --color '#ff00aa'
-
 # Events
-cargo run --bin solverforge-calendar-cli -- events list
 cargo run --bin solverforge-calendar-cli -- events create \
   --calendar-id <calendar-id> \
   --title 'Planning Session' \
-  --start-at '2026-03-22 15:00:00' \
-  --end-at '2026-03-22 16:00:00'
+  --start-at '2026-03-30 15:00:00' \
+  --end-at '2026-03-30 16:00:00'
 
 # Dependencies
 cargo run --bin solverforge-calendar-cli -- dependencies create \
   --from-event-id <event-a> \
-  --to-event-id <event-b>
+  --to-event-id <event-b> \
+  --dependency-type blocks
+
+# Explicit destructive flags
+cargo run --bin solverforge-calendar-cli -- calendars delete <calendar-id> --cascade-events
+cargo run --bin solverforge-calendar-cli -- projects delete <project-id> --detach-events
 ```
 
-Available CRUD groups:
+Available groups:
 
 - `calendars`: `list`, `get`, `create`, `update`, `delete`
 - `projects`: `list`, `get`, `create`, `update`, `delete`
 - `events`: `list`, `get`, `create`, `update`, `delete`
 - `dependencies`: `list`, `get`, `create`, `update`, `delete`
-- `google`: `sync` (all Google calendars, or a specific one via `--calendar-id`)
-
-The event list command also supports `--from` and `--to` with `YYYY-MM-DD HH:MM:SS` timestamps for range-based reads.
-
-Google sync from CLI:
-
-```bash
-# Sync all Google-sourced calendars configured in local DB
-cargo run --bin solverforge-calendar-cli -- google sync
-
-# Sync one Google-sourced calendar by local calendar id
-cargo run --bin solverforge-calendar-cli -- google sync --calendar-id <calendar-id>
-```
+- `google`: `sync`
 
 ## Google Calendar Setup
 
@@ -130,6 +122,7 @@ cargo run --bin solverforge-calendar-cli -- google sync --calendar-id <calendar-
 ```bash
 cargo build           # debug
 cargo build --release # optimized
+cargo build --bins    # both binaries
 cargo check           # fast type check
 cargo clippy          # lint
 cargo test            # run tests
@@ -139,11 +132,14 @@ cargo test            # run tests
 
 ```
 solverforge-calendar/
+├── scripts/
+│   └── solverforge-calendar-cli # Stable wrapper for the automation CLI
 └── src/
     ├── main.rs            # Entry point, terminal setup, event loop
     ├── app.rs             # TEA state machine, all application state
     ├── keys.rs            # (View, KeyEvent) → Action dispatch
     ├── worker.rs          # Background thread pool, WorkerResult enum
+    ├── cli.rs             # Typed JSON CLI handlers and shared automation logic
     ├── event.rs           # Crossterm event handling
     ├── models.rs          # Calendar, Event, Project, EventDependency structs
     ├── db.rs              # SQLite CRUD, schema migrations
@@ -156,6 +152,8 @@ solverforge-calendar/
     │   ├── auth.rs        # OAuth via OS keyring
     │   ├── sync.rs        # Incremental Google Calendar API sync
     │   └── types.rs       # Google JSON → local Event conversion
+    ├── bin/
+    │   └── solverforge-calendar-cli.rs # CLI entry point
     └── ui/
         ├── month_view.rs  # 5-week calendar grid
         ├── week_view.rs   # Hourly time grid

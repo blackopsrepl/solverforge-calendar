@@ -194,7 +194,7 @@ pub fn render_time_grid(
                 .map(|e| {
                     if let (Some(start), Some(end)) = (e.start_dt(), e.end_dt()) {
                         let duration_mins = (end - start).num_minutes().max(0) as u32;
-                        let duration_hours = ((duration_mins + 59) / 60).max(1);
+                        let duration_hours = duration_mins.div_ceil(60).max(1);
                         let max_rows = area.y + area.height - y;
                         covered_until[d as usize] =
                             covered_until[d as usize].max(hour + duration_hours);

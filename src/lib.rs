@@ -1,6 +1,7 @@
 /* Library re-exports for test access.  */
 
 pub mod app;
+pub mod cli;
 pub mod dag;
 pub mod db;
 pub mod event;

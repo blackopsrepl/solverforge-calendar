@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -15,14 +15,18 @@ pub fn db_path() -> PathBuf {
 
 /* Open (or create) the database and run pending migrations. */
 pub fn open() -> Result<Connection> {
-    let path = db_path();
+    open_at(db_path())
+}
+
+pub fn open_at(path: impl AsRef<Path>) -> Result<Connection> {
+    let path = path.as_ref();
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create data directory: {}", parent.display()))?;
     }
 
-    let conn = Connection::open(&path)
+    let conn = Connection::open(path)
         .with_context(|| format!("cannot open database: {}", path.display()))?;
 
     conn.execute_batch(
@@ -336,7 +340,8 @@ pub fn update_event(conn: &Connection, ev: &Event) -> Result<()> {
 
 /* Soft-delete an event by setting deleted_at. */
 pub fn soft_delete_event(conn: &Connection, event_id: &str) -> Result<()> {
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = now_timestamp();
+    delete_dependencies_for_event(conn, event_id)?;
     conn.execute(
         "UPDATE events SET deleted_at=?2, updated_at=?2 WHERE id=?1",
         [event_id, &now],
@@ -347,7 +352,9 @@ pub fn soft_delete_event(conn: &Connection, event_id: &str) -> Result<()> {
 pub fn load_dependencies(conn: &Connection) -> Result<Vec<EventDependency>> {
     let mut stmt = conn.prepare(
         "SELECT id, from_event_id, to_event_id, dependency_type, created_at, updated_at
-         FROM event_dependencies",
+         FROM event_dependencies
+         WHERE from_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)
+           AND to_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)",
     )?;
     let rows = stmt.query_map([], |row| {
         let dep_type_str: String = row.get(3)?;
@@ -557,7 +564,9 @@ pub fn get_dependency(conn: &Connection, dependency_id: &str) -> Result<Option<E
     let mut stmt = conn.prepare(
         "SELECT id, from_event_id, to_event_id, dependency_type, created_at, updated_at
          FROM event_dependencies
-         WHERE id = ?1",
+         WHERE id = ?1
+           AND from_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)
+           AND to_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)",
     )?;
 
     let dependency = stmt
@@ -623,6 +632,64 @@ pub fn delete_dependency(conn: &Connection, dependency_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM event_dependencies WHERE id = ?1",
         [dependency_id],
+    )?;
+    Ok(())
+}
+
+pub fn count_active_events_for_calendar(conn: &Connection, calendar_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE calendar_id = ?1 AND deleted_at IS NULL",
+        [calendar_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub fn count_active_events_for_project(conn: &Connection, project_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE project_id = ?1 AND deleted_at IS NULL",
+        [project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub fn load_active_event_ids_for_calendar(
+    conn: &Connection,
+    calendar_id: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM events WHERE calendar_id = ?1 AND deleted_at IS NULL ORDER BY start_at, title",
+    )?;
+    let rows = stmt.query_map([calendar_id], |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn clear_project_id_for_project(conn: &Connection, project_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE events
+         SET project_id = NULL, updated_at = ?2
+         WHERE project_id = ?1 AND deleted_at IS NULL",
+        [project_id, &now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_dependencies_for_event(conn: &Connection, event_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM event_dependencies
+         WHERE from_event_id = ?1 OR to_event_id = ?1",
+        [event_id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_sync_token(conn: &Connection, calendar_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM sync_tokens WHERE calendar_id = ?1",
+        [calendar_id],
     )?;
     Ok(())
 }
