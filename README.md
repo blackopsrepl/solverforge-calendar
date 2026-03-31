@@ -1,18 +1,19 @@
 # SolverForge Calendar
 
-![SolverForge Mascot](assets/mascot.png)
-
 <div align="center">
 
-[![CI](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.2.0-82FB9C)
-![Rust](https://img.shields.io/badge/rust-stable-orange)
+  <img src="assets/mascot.png" alt="SolverForge Mascot" width="320" />
+
+  <br />
+
+  [![CI](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml/badge.svg?style=for-the-badge)](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml)
+  [![Version](https://img.shields.io/badge/version-v0.2.0-00E6A8?style=for-the-badge)](https://github.com/blackopsrepl/solverforge-calendar)
+  [![Rust](https://img.shields.io/badge/rust-stable-orange?style=for-the-badge)](https://www.rust-lang.org)
+  [![Built With Ratatui](https://img.shields.io/badge/built%20with-ratatui-5A54FF?style=for-the-badge)](https://ratatui.rs/)
 
 </div>
 
 A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG-linked events.
-
-[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 
 ![SolverForge Calendar](assets/screenshot.png)
 
