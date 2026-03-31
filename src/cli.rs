@@ -453,20 +453,22 @@ fn handle_calendars(conn: &Connection, action: CalendarCommand) -> Result<Value,
             )?))
         }
         CalendarCommand::Delete(args) => {
+            let tx = conn.unchecked_transaction().map_err(internal_error)?;
             require_resource(
-                db::get_calendar(conn, &args.id).map_err(internal_error)?,
+                db::get_calendar(&tx, &args.id).map_err(internal_error)?,
                 "calendar",
                 &args.id,
             )?;
+            if db::count_active_calendars(&tx).map_err(internal_error)? <= 1 {
+                return Err(CliError::conflict("cannot delete the last active calendar"));
+            }
             let active_events =
-                db::count_active_events_for_calendar(conn, &args.id).map_err(internal_error)?;
+                db::count_active_events_for_calendar(&tx, &args.id).map_err(internal_error)?;
             if active_events > 0 && !args.cascade_events {
                 return Err(CliError::conflict(
                     "calendar has active events; rerun with --cascade-events to delete them too",
                 ));
             }
-
-            let tx = conn.unchecked_transaction().map_err(internal_error)?;
             if args.cascade_events {
                 for event_id in
                     db::load_active_event_ids_for_calendar(&tx, &args.id).map_err(internal_error)?
@@ -1205,6 +1207,28 @@ mod tests {
         };
         let err = execute_with_connection(&conn, cli).unwrap_err();
         assert_eq!(err.code, "conflict");
+    }
+
+    #[test]
+    fn calendar_delete_rejects_last_active_calendar() {
+        let (_temp, conn) = open_test_db();
+        let only_calendar = db::load_calendars(&conn)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let cli = Cli {
+            command: Command::Calendars {
+                action: CalendarCommand::Delete(CalendarDeleteArgs {
+                    id: only_calendar.id,
+                    cascade_events: false,
+                }),
+            },
+        };
+        let err = execute_with_connection(&conn, cli).unwrap_err();
+        assert_eq!(err.code, "conflict");
+        assert_eq!(err.message, "cannot delete the last active calendar");
     }
 
     #[test]

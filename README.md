@@ -2,6 +2,14 @@
 
 ![SolverForge Mascot](assets/mascot.png)
 
+<div align="center">
+
+[![CI](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-0.2.0-82FB9C)
+![Rust](https://img.shields.io/badge/rust-stable-orange)
+
+</div>
+
 A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG-linked events.
 
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
@@ -20,6 +28,10 @@ cargo run
 
 # Agent-facing CLI entrypoint
 cargo run --bin solverforge-calendar-cli -- calendars list
+
+# Or use the repo Makefile
+make build
+make test
 ```
 
 ## Features
@@ -99,6 +111,22 @@ Available groups:
 - `dependencies`: `list`, `get`, `create`, `update`, `delete`
 - `google`: `sync`
 
+## Developer Workflow
+
+This repo now ships a local Makefile and GitHub Actions CI tailored to the calendar app.
+
+```bash
+make build
+make run
+make run-cli ARGS="events list"
+make lint
+make test
+make ci-local
+make pre-release
+```
+
+Contributor and automation guidance lives in [AGENT.md](AGENT.md). UI and CLI structure references live in [docs/wireframes/tui.md](docs/wireframes/tui.md) and [docs/wireframes/cli.md](docs/wireframes/cli.md).
+
 ## Google Calendar Setup
 
 1. Press `G` to open the Google Auth flow
@@ -128,12 +156,23 @@ cargo build --bins    # both binaries
 cargo check           # fast type check
 cargo clippy          # lint
 cargo test            # run tests
+make ci-local         # local CI simulation
+make pre-release      # release-oriented validation
 ```
 
 ## Files
 
 ```
 solverforge-calendar/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                    # Linux-first CI for fmt, clippy, build, test
+├── docs/
+│   └── wireframes/
+│       ├── cli.md                    # ASCII command/JSON contract reference
+│       └── tui.md                    # ASCII TUI layout reference
+├── AGENT.md                          # Contributor + automation guidance
+├── Makefile                          # Repo-local developer workflow commands
 ├── scripts/
 │   └── solverforge-calendar-cli # Stable wrapper for the automation CLI
 └── src/

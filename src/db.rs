@@ -37,6 +37,7 @@ pub fn open_at(path: impl AsRef<Path>) -> Result<Connection> {
     .context("cannot configure pragmas")?;
 
     migrate(&conn).context("schema migration failed")?;
+    ensure_default_calendar_if_none_active(&conn).context("default calendar recovery failed")?;
 
     Ok(conn)
 }
@@ -167,18 +168,6 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Seed a default local calendar if the table is empty.
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM calendars", [], |row| row.get(0))?;
-
-    if count == 0 {
-        let id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO calendars (id, name, color, source, position)
-             VALUES (?1, 'Personal', '#82FB9C', 'local', 0)",
-            [&id],
-        )?;
-    }
-
     Ok(())
 }
 
@@ -220,6 +209,23 @@ pub fn load_calendars(conn: &Connection) -> Result<Vec<Calendar>> {
 
 fn now_timestamp() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn insert_default_calendar(conn: &Connection) -> Result<()> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO calendars (id, name, color, source, position)
+         VALUES (?1, 'Personal', '#82FB9C', 'local', 0)",
+        [&id],
+    )?;
+    Ok(())
+}
+
+pub fn ensure_default_calendar_if_none_active(conn: &Connection) -> Result<()> {
+    if count_active_calendars(conn)? == 0 {
+        insert_default_calendar(conn)?;
+    }
+    Ok(())
 }
 
 pub fn load_projects(conn: &Connection) -> Result<Vec<Project>> {
@@ -645,6 +651,15 @@ pub fn count_active_events_for_calendar(conn: &Connection, calendar_id: &str) ->
     .map_err(Into::into)
 }
 
+pub fn count_active_calendars(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM calendars WHERE deleted_at IS NULL",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 pub fn count_active_events_for_project(conn: &Connection, project_id: &str) -> Result<i64> {
     conn.query_row(
         "SELECT COUNT(*) FROM events WHERE project_id = ?1 AND deleted_at IS NULL",
@@ -727,5 +742,30 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn open_at_reseeds_when_all_calendars_are_soft_deleted() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("calendar.db");
+
+        {
+            let conn = open_at(&db_path).unwrap();
+            let calendars = load_calendars(&conn).unwrap();
+            assert_eq!(calendars.len(), 1);
+            soft_delete_calendar(&conn, &calendars[0].id).unwrap();
+            assert_eq!(count_active_calendars(&conn).unwrap(), 0);
+        }
+
+        let reopened = open_at(&db_path).unwrap();
+        let calendars = load_calendars(&reopened).unwrap();
+        assert_eq!(calendars.len(), 1);
+        assert_eq!(calendars[0].name, "Personal");
     }
 }

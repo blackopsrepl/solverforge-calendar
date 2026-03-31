@@ -1,6 +1,6 @@
 [package]
 name = "solverforge-calendar"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A spiffy ratatui TUI calendar — local SQLite + Google Calendar, DAG-linked events"
 default-run = "solverforge-calendar"
