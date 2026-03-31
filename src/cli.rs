@@ -258,7 +258,7 @@ pub struct GoogleSyncArgs {
     calendar_id: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CliError {
     pub code: &'static str,
     pub message: String,
@@ -351,12 +351,22 @@ pub fn execute(cli: Cli) -> Result<Value, CliError> {
 }
 
 pub fn execute_with_connection(conn: &Connection, cli: Cli) -> Result<Value, CliError> {
+    execute_with_backend(conn, cli, &RealGoogleSyncBackend)
+}
+
+fn execute_with_backend(
+    conn: &Connection,
+    cli: Cli,
+    google_sync_backend: &dyn GoogleSyncBackend,
+) -> Result<Value, CliError> {
     let data = match cli.command {
         Command::Calendars { action } => handle_calendars(conn, action)?,
         Command::Projects { action } => handle_projects(conn, action)?,
         Command::Events { action } => handle_events(conn, action)?,
         Command::Dependencies { action } => handle_dependencies(conn, action)?,
-        Command::Google { action } => handle_google(conn, action)?,
+        Command::Google { action } => {
+            handle_google_with_backend(conn, action, google_sync_backend)?
+        }
     };
     Ok(success_value(data))
 }
@@ -595,6 +605,7 @@ fn handle_events(conn: &Connection, action: EventCommand) -> Result<Value, CliEr
             Ok(json!(event))
         }
         EventCommand::Update(args) => {
+            validate_event_update_args(&args)?;
             let mut event = require_resource(
                 db::get_event(conn, &args.id).map_err(internal_error)?,
                 "event",
@@ -749,13 +760,13 @@ fn handle_dependencies(conn: &Connection, action: DependencyCommand) -> Result<V
     }
 }
 
-fn handle_google(conn: &Connection, action: GoogleCommand) -> Result<Value, CliError> {
+fn handle_google_with_backend(
+    conn: &Connection,
+    action: GoogleCommand,
+    google_sync_backend: &dyn GoogleSyncBackend,
+) -> Result<Value, CliError> {
     match action {
         GoogleCommand::Sync(args) => {
-            let client = google::auth::GoogleClient::from_keyring().ok_or_else(|| {
-                CliError::external("google credentials are not configured in keyring")
-            })?;
-
             let mut calendars: Vec<_> = db::load_calendars(conn)
                 .map_err(internal_error)?
                 .into_iter()
@@ -781,23 +792,7 @@ fn handle_google(conn: &Connection, action: GoogleCommand) -> Result<Value, CliE
             let mut total_updated = 0usize;
 
             for calendar in &calendars {
-                let sync_token = db::get_sync_token(conn, &calendar.id).map_err(internal_error)?;
-                let delta = rt
-                    .block_on(google::sync::fetch_calendar_delta(
-                        &client,
-                        calendar,
-                        sync_token.as_deref(),
-                    ))
-                    .with_context(|| format!("sync failed for calendar '{}'", calendar.name))
-                    .map_err(|e| CliError::external(e.to_string()))?;
-                let (added, updated) = google::sync::apply_calendar_sync(conn, calendar, delta)
-                    .with_context(|| {
-                        format!(
-                            "failed to persist sync results for calendar '{}'",
-                            calendar.name
-                        )
-                    })
-                    .map_err(|e| CliError::external(e.to_string()))?;
+                let (added, updated) = google_sync_backend.sync_calendar(&rt, conn, calendar)?;
                 total_added += added;
                 total_updated += updated;
                 results.push(SyncCalendarData {
@@ -816,6 +811,47 @@ fn handle_google(conn: &Connection, action: GoogleCommand) -> Result<Value, CliE
                 "results": results,
             }))
         }
+    }
+}
+
+trait GoogleSyncBackend {
+    fn sync_calendar(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        conn: &Connection,
+        calendar: &models::Calendar,
+    ) -> Result<(usize, usize), CliError>;
+}
+
+struct RealGoogleSyncBackend;
+
+impl GoogleSyncBackend for RealGoogleSyncBackend {
+    fn sync_calendar(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        conn: &Connection,
+        calendar: &models::Calendar,
+    ) -> Result<(usize, usize), CliError> {
+        let client = google::auth::GoogleClient::from_keyring().ok_or_else(|| {
+            CliError::external("google credentials are not configured in keyring")
+        })?;
+        let sync_token = db::get_sync_token(conn, &calendar.id).map_err(internal_error)?;
+        let delta = runtime
+            .block_on(google::sync::fetch_calendar_delta(
+                &client,
+                calendar,
+                sync_token.as_deref(),
+            ))
+            .with_context(|| format!("sync failed for calendar '{}'", calendar.name))
+            .map_err(|e| CliError::external(e.to_string()))?;
+        google::sync::apply_calendar_sync(conn, calendar, delta)
+            .with_context(|| {
+                format!(
+                    "failed to persist sync results for calendar '{}'",
+                    calendar.name
+                )
+            })
+            .map_err(|e| CliError::external(e.to_string()))
     }
 }
 
@@ -848,6 +884,35 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
             Some(trimmed)
         }
     })
+}
+
+fn validate_event_update_args(args: &EventUpdateArgs) -> Result<(), CliError> {
+    if args.project_id.is_some() && args.clear_project_id {
+        return Err(CliError::validation(
+            "cannot combine --project-id with --clear-project-id",
+        ));
+    }
+    if args.description.is_some() && args.clear_description {
+        return Err(CliError::validation(
+            "cannot combine --description with --clear-description",
+        ));
+    }
+    if args.location.is_some() && args.clear_location {
+        return Err(CliError::validation(
+            "cannot combine --location with --clear-location",
+        ));
+    }
+    if args.rrule.is_some() && args.clear_rrule {
+        return Err(CliError::validation(
+            "cannot combine --rrule with --clear-rrule",
+        ));
+    }
+    if args.reminder_minutes.is_some() && args.clear_reminder_minutes {
+        return Err(CliError::validation(
+            "cannot combine --reminder-minutes with --clear-reminder-minutes",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_title(title: &str) -> Result<(), CliError> {
@@ -979,6 +1044,8 @@ fn dependency_type_from_arg(dependency_type: DependencyTypeArg) -> models::Depen
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use tempfile::TempDir;
 
@@ -1052,6 +1119,44 @@ mod tests {
         event
     }
 
+    struct FakeGoogleSyncBackend {
+        default_result: Result<(usize, usize), CliError>,
+        results_by_calendar_id: HashMap<String, Result<(usize, usize), CliError>>,
+    }
+
+    impl FakeGoogleSyncBackend {
+        fn with_default(result: Result<(usize, usize), CliError>) -> Self {
+            Self {
+                default_result: result,
+                results_by_calendar_id: HashMap::new(),
+            }
+        }
+
+        fn with_calendar_result(
+            mut self,
+            calendar_id: &str,
+            result: Result<(usize, usize), CliError>,
+        ) -> Self {
+            self.results_by_calendar_id
+                .insert(calendar_id.to_string(), result);
+            self
+        }
+    }
+
+    impl GoogleSyncBackend for FakeGoogleSyncBackend {
+        fn sync_calendar(
+            &self,
+            _runtime: &tokio::runtime::Runtime,
+            _conn: &Connection,
+            calendar: &models::Calendar,
+        ) -> Result<(usize, usize), CliError> {
+            self.results_by_calendar_id
+                .get(&calendar.id)
+                .cloned()
+                .unwrap_or_else(|| self.default_result.clone())
+        }
+    }
+
     #[test]
     fn blocks_cycle_is_rejected() {
         let (_temp, conn) = open_test_db();
@@ -1122,5 +1227,131 @@ mod tests {
         let updated = db::get_event(&conn, &event.id).unwrap().unwrap();
         assert_eq!(updated.project_id, None);
         assert!(db::get_project(&conn, &project.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn event_update_conflicting_flags_are_rejected() {
+        let (_temp, conn) = open_test_db();
+        let calendar = seed_calendar(&conn, "Work");
+        let event = seed_event(&conn, &calendar.id, None, "Milestone");
+
+        let cli = Cli {
+            command: Command::Events {
+                action: EventCommand::Update(EventUpdateArgs {
+                    id: event.id,
+                    calendar_id: None,
+                    title: None,
+                    project_id: None,
+                    clear_project_id: false,
+                    description: Some("new".to_string()),
+                    clear_description: true,
+                    location: None,
+                    clear_location: false,
+                    start_at: None,
+                    end_at: None,
+                    all_day: None,
+                    rrule: None,
+                    clear_rrule: false,
+                    reminder_minutes: None,
+                    clear_reminder_minutes: false,
+                    timezone: None,
+                }),
+            },
+        };
+
+        let err = execute_with_connection(&conn, cli).unwrap_err();
+        assert_eq!(err.code, "validation_error");
+    }
+
+    #[test]
+    fn google_sync_without_google_calendars_returns_conflict() {
+        let (_temp, conn) = open_test_db();
+        let cli = Cli {
+            command: Command::Google {
+                action: GoogleCommand::Sync(GoogleSyncArgs { calendar_id: None }),
+            },
+        };
+
+        let backend = FakeGoogleSyncBackend::with_default(Ok((0, 0)));
+        let err = execute_with_backend(&conn, cli, &backend).unwrap_err();
+        assert_eq!(err.code, "conflict");
+        assert_eq!(err.message, "no google calendars found to sync");
+    }
+
+    #[test]
+    fn google_sync_reports_missing_credentials() {
+        let (_temp, conn) = open_test_db();
+        let now = timestamp_now();
+        let google_calendar = models::Calendar {
+            id: Uuid::new_v4().to_string(),
+            name: "Google Work".to_string(),
+            color: "#00aaff".to_string(),
+            source: models::CalendarSource::Google,
+            google_id: Some("google-work".to_string()),
+            visible: true,
+            position: 1,
+            created_at: now.clone(),
+            updated_at: now,
+            deleted_at: None,
+        };
+        db::insert_calendar(&conn, &google_calendar).unwrap();
+
+        let cli = Cli {
+            command: Command::Google {
+                action: GoogleCommand::Sync(GoogleSyncArgs { calendar_id: None }),
+            },
+        };
+        let backend = FakeGoogleSyncBackend::with_default(Err(CliError::external(
+            "google credentials are not configured in keyring",
+        )));
+        let err = execute_with_backend(&conn, cli, &backend).unwrap_err();
+        assert_eq!(err.code, "external_error");
+    }
+
+    #[test]
+    fn google_sync_filters_to_selected_calendar() {
+        let (_temp, conn) = open_test_db();
+        let now = timestamp_now();
+        let google_calendar = models::Calendar {
+            id: Uuid::new_v4().to_string(),
+            name: "Google Work".to_string(),
+            color: "#00aaff".to_string(),
+            source: models::CalendarSource::Google,
+            google_id: Some("google-work".to_string()),
+            visible: true,
+            position: 1,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            deleted_at: None,
+        };
+        let other_google_calendar = models::Calendar {
+            id: Uuid::new_v4().to_string(),
+            name: "Google Personal".to_string(),
+            color: "#ffaa00".to_string(),
+            source: models::CalendarSource::Google,
+            google_id: Some("google-personal".to_string()),
+            visible: true,
+            position: 2,
+            created_at: now.clone(),
+            updated_at: now,
+            deleted_at: None,
+        };
+        db::insert_calendar(&conn, &google_calendar).unwrap();
+        db::insert_calendar(&conn, &other_google_calendar).unwrap();
+
+        let cli = Cli {
+            command: Command::Google {
+                action: GoogleCommand::Sync(GoogleSyncArgs {
+                    calendar_id: Some(google_calendar.id.clone()),
+                }),
+            },
+        };
+        let backend = FakeGoogleSyncBackend::with_default(Ok((7, 8)))
+            .with_calendar_result(&google_calendar.id, Ok((2, 3)));
+        let value = execute_with_backend(&conn, cli, &backend).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["data"]["calendars_synced"], 1);
+        assert_eq!(value["data"]["events_added"], 2);
+        assert_eq!(value["data"]["events_updated"], 3);
     }
 }

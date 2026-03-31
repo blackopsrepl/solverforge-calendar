@@ -1,5 +1,7 @@
 # SolverForge Calendar
 
+![SolverForge Mascot](assets/mascot.png)
+
 A spiffy ratatui TUI calendar — local SQLite with Google Calendar sync and DAG-linked events.
 
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
