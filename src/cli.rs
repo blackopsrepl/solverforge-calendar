@@ -2,7 +2,7 @@ use anyhow::Context;
 use chrono::NaiveDateTime;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -834,6 +834,9 @@ impl GoogleSyncBackend for RealGoogleSyncBackend {
         conn: &Connection,
         calendar: &models::Calendar,
     ) -> Result<(usize, usize), CliError> {
+        if let Some(result) = google_sync_override_result(calendar)? {
+            return result;
+        }
         let client = google::auth::GoogleClient::from_keyring().ok_or_else(|| {
             CliError::external("google credentials are not configured in keyring")
         })?;
@@ -855,6 +858,48 @@ impl GoogleSyncBackend for RealGoogleSyncBackend {
             })
             .map_err(|e| CliError::external(e.to_string()))
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GoogleSyncOverrideConfig {
+    #[serde(default)]
+    default: Option<GoogleSyncOverrideResult>,
+    #[serde(default)]
+    by_calendar_id: std::collections::HashMap<String, GoogleSyncOverrideResult>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GoogleSyncOverrideResult {
+    added: Option<usize>,
+    updated: Option<usize>,
+    error: Option<String>,
+}
+
+type GoogleSyncCounts = (usize, usize);
+type MaybeGoogleSyncOverride = Option<Result<GoogleSyncCounts, CliError>>;
+
+fn google_sync_override_result(
+    calendar: &models::Calendar,
+) -> Result<MaybeGoogleSyncOverride, CliError> {
+    let Ok(raw) = std::env::var("SOLVERFORGE_CALENDAR_TEST_GOOGLE_SYNC") else {
+        return Ok(None);
+    };
+
+    let config: GoogleSyncOverrideConfig = serde_json::from_str(&raw)
+        .map_err(|e| CliError::internal(format!("invalid google sync override: {}", e)))?;
+    let result = config
+        .by_calendar_id
+        .get(&calendar.id)
+        .cloned()
+        .or(config.default);
+
+    Ok(result.map(|result| {
+        if let Some(error) = result.error {
+            Err(CliError::external(error))
+        } else {
+            Ok((result.added.unwrap_or(0), result.updated.unwrap_or(0)))
+        }
+    }))
 }
 
 fn timestamp_now() -> String {
