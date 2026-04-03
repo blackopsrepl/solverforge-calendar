@@ -2,7 +2,7 @@
 
 <div align="center">
 
-  <img src="assets/mascot.png" alt="SolverForge Mascot" width="320" />
+  <img src="assets/mascot-20260403.png" alt="SolverForge Mascot" width="320" />
 
   <br />
 
