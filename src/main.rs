@@ -11,22 +11,9 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-mod app;
-mod dag;
-mod db;
-mod event;
-mod google;
-mod ical;
-mod keys;
-mod models;
-mod notifications;
-mod recurrence;
-mod theme;
-mod ui;
-mod worker;
-
-use crate::app::App;
-use crate::event::{Event, EventHandler};
+use solverforge_calendar::app::App;
+use solverforge_calendar::event::{Event, EventHandler};
+use solverforge_calendar::{notifications, ui};
 
 fn main() -> Result<()> {
     // Install panic hook that restores the terminal before printing the panic.

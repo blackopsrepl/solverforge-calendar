@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -15,14 +15,18 @@ pub fn db_path() -> PathBuf {
 
 /* Open (or create) the database and run pending migrations. */
 pub fn open() -> Result<Connection> {
-    let path = db_path();
+    open_at(db_path())
+}
+
+pub fn open_at(path: impl AsRef<Path>) -> Result<Connection> {
+    let path = path.as_ref();
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create data directory: {}", parent.display()))?;
     }
 
-    let conn = Connection::open(&path)
+    let conn = Connection::open(path)
         .with_context(|| format!("cannot open database: {}", path.display()))?;
 
     conn.execute_batch(
@@ -33,6 +37,7 @@ pub fn open() -> Result<Connection> {
     .context("cannot configure pragmas")?;
 
     migrate(&conn).context("schema migration failed")?;
+    ensure_default_calendar_if_none_active(&conn).context("default calendar recovery failed")?;
 
     Ok(conn)
 }
@@ -163,18 +168,6 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Seed a default local calendar if the table is empty.
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM calendars", [], |row| row.get(0))?;
-
-    if count == 0 {
-        let id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO calendars (id, name, color, source, position)
-             VALUES (?1, 'Personal', '#82FB9C', 'local', 0)",
-            [&id],
-        )?;
-    }
-
     Ok(())
 }
 
@@ -212,6 +205,27 @@ pub fn load_calendars(conn: &Connection) -> Result<Vec<Calendar>> {
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+fn now_timestamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn insert_default_calendar(conn: &Connection) -> Result<()> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO calendars (id, name, color, source, position)
+         VALUES (?1, 'Personal', '#82FB9C', 'local', 0)",
+        [&id],
+    )?;
+    Ok(())
+}
+
+pub fn ensure_default_calendar_if_none_active(conn: &Connection) -> Result<()> {
+    if count_active_calendars(conn)? == 0 {
+        insert_default_calendar(conn)?;
+    }
+    Ok(())
 }
 
 pub fn load_projects(conn: &Connection) -> Result<Vec<Project>> {
@@ -332,7 +346,8 @@ pub fn update_event(conn: &Connection, ev: &Event) -> Result<()> {
 
 /* Soft-delete an event by setting deleted_at. */
 pub fn soft_delete_event(conn: &Connection, event_id: &str) -> Result<()> {
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = now_timestamp();
+    delete_dependencies_for_event(conn, event_id)?;
     conn.execute(
         "UPDATE events SET deleted_at=?2, updated_at=?2 WHERE id=?1",
         [event_id, &now],
@@ -343,7 +358,9 @@ pub fn soft_delete_event(conn: &Connection, event_id: &str) -> Result<()> {
 pub fn load_dependencies(conn: &Connection) -> Result<Vec<EventDependency>> {
     let mut stmt = conn.prepare(
         "SELECT id, from_event_id, to_event_id, dependency_type, created_at, updated_at
-         FROM event_dependencies",
+         FROM event_dependencies
+         WHERE from_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)
+           AND to_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)",
     )?;
     let rows = stmt.query_map([], |row| {
         let dep_type_str: String = row.get(3)?;
@@ -363,6 +380,333 @@ pub fn load_dependencies(conn: &Connection) -> Result<Vec<EventDependency>> {
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+pub fn load_events(conn: &Connection) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, calendar_id, project_id, title, description, location,
+                start_at, end_at, all_day, rrule, google_id, google_etag,
+                reminder_minutes, timezone, created_at, updated_at, deleted_at
+         FROM events
+         WHERE deleted_at IS NULL
+         ORDER BY start_at, title",
+    )?;
+    query_events(&mut stmt, &[])
+}
+
+pub fn get_calendar(conn: &Connection, calendar_id: &str) -> Result<Option<Calendar>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, source, google_id, visible, position,
+                created_at, updated_at, deleted_at
+         FROM calendars
+         WHERE id = ?1 AND deleted_at IS NULL",
+    )?;
+
+    let calendar = stmt
+        .query_row([calendar_id], |row| {
+            let source_str: String = row.get(3)?;
+            let source = if source_str == "google" {
+                CalendarSource::Google
+            } else {
+                CalendarSource::Local
+            };
+            Ok(Calendar {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                source,
+                google_id: row.get(4)?,
+                visible: row.get::<_, i64>(5)? != 0,
+                position: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                deleted_at: row.get(9)?,
+            })
+        })
+        .optional()?;
+
+    Ok(calendar)
+}
+
+pub fn insert_calendar(conn: &Connection, calendar: &Calendar) -> Result<()> {
+    conn.execute(
+        "INSERT INTO calendars
+             (id, name, color, source, google_id, visible, position, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            calendar.id,
+            calendar.name,
+            calendar.color,
+            calendar.source.to_string(),
+            calendar.google_id,
+            calendar.visible as i64,
+            calendar.position,
+            calendar.created_at,
+            calendar.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_calendar(conn: &Connection, calendar: &Calendar) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE calendars SET
+             name = ?2,
+             color = ?3,
+             source = ?4,
+             google_id = ?5,
+             visible = ?6,
+             position = ?7,
+             updated_at = ?8
+         WHERE id = ?1",
+        rusqlite::params![
+            calendar.id,
+            calendar.name,
+            calendar.color,
+            calendar.source.to_string(),
+            calendar.google_id,
+            calendar.visible as i64,
+            calendar.position,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn soft_delete_calendar(conn: &Connection, calendar_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE calendars SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+        [calendar_id, &now],
+    )?;
+    Ok(())
+}
+
+pub fn get_project(conn: &Connection, project_id: &str) -> Result<Option<Project>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, description, created_at, updated_at, deleted_at
+         FROM projects
+         WHERE id = ?1 AND deleted_at IS NULL",
+    )?;
+
+    let project = stmt
+        .query_row([project_id], |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                description: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                deleted_at: row.get(6)?,
+            })
+        })
+        .optional()?;
+
+    Ok(project)
+}
+
+pub fn insert_project(conn: &Connection, project: &Project) -> Result<()> {
+    conn.execute(
+        "INSERT INTO projects
+             (id, name, color, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            project.id,
+            project.name,
+            project.color,
+            project.description,
+            project.created_at,
+            project.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_project(conn: &Connection, project: &Project) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE projects SET
+             name = ?2,
+             color = ?3,
+             description = ?4,
+             updated_at = ?5
+         WHERE id = ?1",
+        rusqlite::params![
+            project.id,
+            project.name,
+            project.color,
+            project.description,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn soft_delete_project(conn: &Connection, project_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE projects SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+        [project_id, &now],
+    )?;
+    Ok(())
+}
+
+pub fn get_event(conn: &Connection, event_id: &str) -> Result<Option<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, calendar_id, project_id, title, description, location,
+                start_at, end_at, all_day, rrule, google_id, google_etag,
+                reminder_minutes, timezone, created_at, updated_at, deleted_at
+         FROM events
+         WHERE id = ?1 AND deleted_at IS NULL",
+    )?;
+
+    let rows = query_events(&mut stmt, &[event_id])?;
+    Ok(rows.into_iter().next())
+}
+
+pub fn get_dependency(conn: &Connection, dependency_id: &str) -> Result<Option<EventDependency>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, from_event_id, to_event_id, dependency_type, created_at, updated_at
+         FROM event_dependencies
+         WHERE id = ?1
+           AND from_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)
+           AND to_event_id IN (SELECT id FROM events WHERE deleted_at IS NULL)",
+    )?;
+
+    let dependency = stmt
+        .query_row([dependency_id], |row| {
+            let dep_type_str: String = row.get(3)?;
+            let dependency_type = if dep_type_str == "blocks" {
+                DependencyType::Blocks
+            } else {
+                DependencyType::Related
+            };
+            Ok(EventDependency {
+                id: row.get(0)?,
+                from_event_id: row.get(1)?,
+                to_event_id: row.get(2)?,
+                dependency_type,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .optional()?;
+
+    Ok(dependency)
+}
+
+pub fn insert_dependency(conn: &Connection, dependency: &EventDependency) -> Result<()> {
+    conn.execute(
+        "INSERT INTO event_dependencies
+             (id, from_event_id, to_event_id, dependency_type, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            dependency.id,
+            dependency.from_event_id,
+            dependency.to_event_id,
+            dependency.dependency_type.to_string(),
+            dependency.created_at,
+            dependency.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_dependency(conn: &Connection, dependency: &EventDependency) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE event_dependencies SET
+             from_event_id = ?2,
+             to_event_id = ?3,
+             dependency_type = ?4,
+             updated_at = ?5
+         WHERE id = ?1",
+        rusqlite::params![
+            dependency.id,
+            dependency.from_event_id,
+            dependency.to_event_id,
+            dependency.dependency_type.to_string(),
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_dependency(conn: &Connection, dependency_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM event_dependencies WHERE id = ?1",
+        [dependency_id],
+    )?;
+    Ok(())
+}
+
+pub fn count_active_events_for_calendar(conn: &Connection, calendar_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE calendar_id = ?1 AND deleted_at IS NULL",
+        [calendar_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub fn count_active_calendars(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM calendars WHERE deleted_at IS NULL",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub fn count_active_events_for_project(conn: &Connection, project_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE project_id = ?1 AND deleted_at IS NULL",
+        [project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub fn load_active_event_ids_for_calendar(
+    conn: &Connection,
+    calendar_id: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM events WHERE calendar_id = ?1 AND deleted_at IS NULL ORDER BY start_at, title",
+    )?;
+    let rows = stmt.query_map([calendar_id], |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn clear_project_id_for_project(conn: &Connection, project_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE events
+         SET project_id = NULL, updated_at = ?2
+         WHERE project_id = ?1 AND deleted_at IS NULL",
+        [project_id, &now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_dependencies_for_event(conn: &Connection, event_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM event_dependencies
+         WHERE from_event_id = ?1 OR to_event_id = ?1",
+        [event_id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_sync_token(conn: &Connection, calendar_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM sync_tokens WHERE calendar_id = ?1",
+        [calendar_id],
+    )?;
+    Ok(())
 }
 
 pub fn upsert_sync_token(conn: &Connection, calendar_id: &str, token: &str) -> Result<()> {
@@ -398,5 +742,30 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn open_at_reseeds_when_all_calendars_are_soft_deleted() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("calendar.db");
+
+        {
+            let conn = open_at(&db_path).unwrap();
+            let calendars = load_calendars(&conn).unwrap();
+            assert_eq!(calendars.len(), 1);
+            soft_delete_calendar(&conn, &calendars[0].id).unwrap();
+            assert_eq!(count_active_calendars(&conn).unwrap(), 0);
+        }
+
+        let reopened = open_at(&db_path).unwrap();
+        let calendars = load_calendars(&reopened).unwrap();
+        assert_eq!(calendars.len(), 1);
+        assert_eq!(calendars[0].name, "Personal");
     }
 }

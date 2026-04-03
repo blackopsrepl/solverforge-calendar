@@ -38,7 +38,6 @@ impl GoogleClient {
         write_keyring(KEYRING_CLIENT_SECRET_KEY, client_secret)?;
         Ok(())
     }
-
 }
 
 fn read_keyring(key: &str) -> Option<String> {
