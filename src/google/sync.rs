@@ -28,7 +28,7 @@ pub async fn fetch_calendar_delta(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("calendar '{}' has no google_id", calendar.name))?;
 
-    let access_token = refresh_access_token(client).await?;
+    let access_token = client.refresh_access_token().await?;
 
     let (events_json, new_sync_token) =
         fetch_events(&access_token, google_cal_id, sync_token).await?;
@@ -52,7 +52,7 @@ pub fn apply_calendar_sync(
         if gev["status"].as_str() == Some("cancelled") {
             if let Some(gid) = gev["id"].as_str() {
                 // Find local event by google_id and soft-delete it
-                let _ = soft_delete_by_google_id(conn, gid);
+                let _ = soft_delete_by_google_id(conn, &calendar.id, gid);
             }
             continue;
         }
@@ -60,10 +60,13 @@ pub fn apply_calendar_sync(
         match crate::google::types::google_event_to_local(&calendar.id, gev) {
             Ok(event) => {
                 // Check if we already have this event (by google_id)
-                let exists =
-                    event_exists_by_google_id(conn, event.google_id.as_deref().unwrap_or(""))?;
+                let exists = event_exists_by_google_id(
+                    conn,
+                    &event.calendar_id,
+                    event.google_id.as_deref().unwrap_or(""),
+                )?;
                 if exists {
-                    let _ = update_event_by_google_id(conn, &event);
+                    let _ = update_event_by_google_id(conn, &event.calendar_id, &event);
                     updated += 1;
                 } else {
                     let _ = crate::db::insert_event(conn, &event);
@@ -83,30 +86,6 @@ pub fn apply_calendar_sync(
     }
 
     Ok((added, updated))
-}
-
-async fn refresh_access_token(client: &GoogleClient) -> Result<String> {
-    let http = reqwest::Client::new();
-    let params = [
-        ("client_id", client.client_id.as_str()),
-        ("client_secret", client.client_secret.as_str()),
-        ("refresh_token", client.refresh_token.as_str()),
-        ("grant_type", "refresh_token"),
-    ];
-    let resp: serde_json::Value = http
-        .post("https://oauth2.googleapis.com/token")
-        .form(&params)
-        .send()
-        .await
-        .context("token refresh request failed")?
-        .json()
-        .await
-        .context("token refresh JSON parse failed")?;
-
-    resp["access_token"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("no access_token in refresh response: {:?}", resp))
 }
 
 async fn fetch_events(
@@ -170,10 +149,17 @@ async fn fetch_events(
     Ok((all_events, new_sync_token))
 }
 
-fn event_exists_by_google_id(conn: &rusqlite::Connection, google_id: &str) -> Result<bool> {
+fn event_exists_by_google_id(
+    conn: &rusqlite::Connection,
+    calendar_id: &str,
+    google_id: &str,
+) -> Result<bool> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE google_id = ?1 AND deleted_at IS NULL",
-        [google_id],
+        "SELECT COUNT(*) FROM events
+         WHERE calendar_id = ?1
+           AND google_id = ?2
+           AND deleted_at IS NULL",
+        [calendar_id, google_id],
         |row| row.get(0),
     )?;
     Ok(count > 0)
@@ -181,15 +167,17 @@ fn event_exists_by_google_id(conn: &rusqlite::Connection, google_id: &str) -> Re
 
 fn update_event_by_google_id(
     conn: &rusqlite::Connection,
+    calendar_id: &str,
     event: &crate::models::Event,
 ) -> Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
-        "UPDATE events SET title=?2, description=?3, location=?4,
-                  start_at=?5, end_at=?6, all_day=?7, rrule=?8,
-                  google_etag=?9, updated_at=?10
-         WHERE google_id=?1 AND deleted_at IS NULL",
+        "UPDATE events SET title=?3, description=?4, location=?5,
+                  start_at=?6, end_at=?7, all_day=?8, rrule=?9,
+                  google_etag=?10, updated_at=?11
+         WHERE calendar_id=?1 AND google_id=?2 AND deleted_at IS NULL",
         rusqlite::params![
+            calendar_id,
             event.google_id,
             event.title,
             event.description,
@@ -205,11 +193,17 @@ fn update_event_by_google_id(
     Ok(())
 }
 
-fn soft_delete_by_google_id(conn: &rusqlite::Connection, google_id: &str) -> Result<()> {
+fn soft_delete_by_google_id(
+    conn: &rusqlite::Connection,
+    calendar_id: &str,
+    google_id: &str,
+) -> Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
-        "UPDATE events SET deleted_at=?2, updated_at=?2 WHERE google_id=?1",
-        [google_id, &now],
+        "UPDATE events
+         SET deleted_at=?3, updated_at=?3
+         WHERE calendar_id=?1 AND google_id=?2",
+        [calendar_id, google_id, &now],
     )?;
     Ok(())
 }
@@ -230,13 +224,92 @@ fn urlenccode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use rusqlite::params;
     use tempfile::TempDir;
 
     use super::{apply_calendar_sync, CalendarSyncDelta};
     use crate::{
         db,
-        models::{Calendar, CalendarSource},
+        models::{Calendar, CalendarSource, Event},
     };
+
+    struct EventSnapshot {
+        title: String,
+        google_id: Option<String>,
+        google_etag: Option<String>,
+        deleted_at: Option<String>,
+    }
+
+    fn insert_google_calendar(
+        conn: &rusqlite::Connection,
+        id: &str,
+        google_id: &str,
+    ) -> Result<Calendar> {
+        let calendar = Calendar {
+            id: id.to_string(),
+            name: format!("Calendar {}", id),
+            color: "#50f872".to_string(),
+            source: CalendarSource::Google,
+            google_id: Some(google_id.to_string()),
+            visible: true,
+            position: 0,
+            created_at: "2026-03-30 10:00:00".to_string(),
+            updated_at: "2026-03-30 10:00:00".to_string(),
+            deleted_at: None,
+        };
+        db::insert_calendar(conn, &calendar)?;
+        Ok(calendar)
+    }
+
+    fn insert_synced_event(
+        conn: &rusqlite::Connection,
+        id: &str,
+        calendar_id: &str,
+        google_id: &str,
+        title: &str,
+    ) -> Result<()> {
+        db::insert_event(
+            conn,
+            &Event {
+                id: id.to_string(),
+                calendar_id: calendar_id.to_string(),
+                project_id: None,
+                title: title.to_string(),
+                description: None,
+                location: None,
+                start_at: "2026-03-30 09:00:00".to_string(),
+                end_at: "2026-03-30 10:00:00".to_string(),
+                all_day: false,
+                rrule: None,
+                google_id: Some(google_id.to_string()),
+                google_etag: Some("\"etag-old\"".to_string()),
+                reminder_minutes: None,
+                timezone: "UTC".to_string(),
+                created_at: "2026-03-30 10:00:00".to_string(),
+                updated_at: "2026-03-30 10:00:00".to_string(),
+                deleted_at: None,
+            },
+        )?;
+        Ok(())
+    }
+
+    fn fetch_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> Result<EventSnapshot> {
+        conn.query_row(
+            "SELECT title, google_id, google_etag, deleted_at
+             FROM events
+             WHERE id = ?1",
+            [event_id],
+            |row| {
+                Ok(EventSnapshot {
+                    title: row.get(0)?,
+                    google_id: row.get(1)?,
+                    google_etag: row.get(2)?,
+                    deleted_at: row.get::<_, Option<String>>(3)?,
+                })
+            },
+        )
+        .map_err(Into::into)
+    }
 
     #[test]
     fn apply_calendar_sync_uses_supplied_connection() -> Result<()> {
@@ -287,6 +360,158 @@ mod tests {
             db::get_sync_token(&conn, &calendar.id)?.as_deref(),
             Some("sync-token-1")
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_calendar_sync_inserts_even_when_other_calendar_has_same_google_id() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("calendar.db");
+        let conn = db::open_at(&path)?;
+        let retained = insert_google_calendar(&conn, "google-cal-a", "google-cal-a-id")?;
+        let other = insert_google_calendar(&conn, "google-cal-b", "google-cal-b-id")?;
+        insert_synced_event(
+            &conn,
+            "other-event",
+            &other.id,
+            "shared-google-event",
+            "Other calendar event",
+        )?;
+
+        let delta = CalendarSyncDelta {
+            events_json: vec![serde_json::json!({
+                "id": "shared-google-event",
+                "summary": "Imported into retained calendar",
+                "etag": "\"etag-a\"",
+                "status": "confirmed",
+                "start": {
+                    "dateTime": "2026-03-31T09:00:00Z",
+                    "timeZone": "UTC"
+                },
+                "end": {
+                    "dateTime": "2026-03-31T10:00:00Z"
+                }
+            })],
+            new_sync_token: None,
+        };
+
+        let (added, updated) = apply_calendar_sync(&conn, &retained, delta)?;
+        assert_eq!(added, 1);
+        assert_eq!(updated, 0);
+
+        let matching_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE calendar_id = ?1 AND google_id = ?2 AND deleted_at IS NULL",
+            params![retained.id, "shared-google-event"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(matching_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_calendar_sync_updates_only_matching_calendar_event() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("calendar.db");
+        let conn = db::open_at(&path)?;
+        let retained = insert_google_calendar(&conn, "google-cal-a", "google-cal-a-id")?;
+        let other = insert_google_calendar(&conn, "google-cal-b", "google-cal-b-id")?;
+        insert_synced_event(
+            &conn,
+            "retained-event",
+            &retained.id,
+            "shared-google-event",
+            "Old A",
+        )?;
+        insert_synced_event(
+            &conn,
+            "other-event",
+            &other.id,
+            "shared-google-event",
+            "Old B",
+        )?;
+
+        let delta = CalendarSyncDelta {
+            events_json: vec![serde_json::json!({
+                "id": "shared-google-event",
+                "summary": "Updated A",
+                "etag": "\"etag-a-new\"",
+                "status": "confirmed",
+                "start": {
+                    "dateTime": "2026-04-01T09:00:00Z",
+                    "timeZone": "UTC"
+                },
+                "end": {
+                    "dateTime": "2026-04-01T10:00:00Z"
+                }
+            })],
+            new_sync_token: None,
+        };
+
+        let (added, updated) = apply_calendar_sync(&conn, &retained, delta)?;
+        assert_eq!(added, 0);
+        assert_eq!(updated, 1);
+
+        let retained_event = fetch_event_snapshot(&conn, "retained-event")?;
+        let other_event = fetch_event_snapshot(&conn, "other-event")?;
+        assert_eq!(retained_event.title, "Updated A");
+        assert_eq!(
+            retained_event.google_id.as_deref(),
+            Some("shared-google-event")
+        );
+        assert_eq!(
+            retained_event.google_etag.as_deref(),
+            Some("\"etag-a-new\"")
+        );
+        assert_eq!(other_event.title, "Old B");
+        assert_eq!(
+            other_event.google_id.as_deref(),
+            Some("shared-google-event")
+        );
+        assert_eq!(other_event.google_etag.as_deref(), Some("\"etag-old\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_calendar_sync_soft_deletes_only_matching_calendar_event() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("calendar.db");
+        let conn = db::open_at(&path)?;
+        let retained = insert_google_calendar(&conn, "google-cal-a", "google-cal-a-id")?;
+        let other = insert_google_calendar(&conn, "google-cal-b", "google-cal-b-id")?;
+        insert_synced_event(
+            &conn,
+            "retained-event",
+            &retained.id,
+            "shared-google-event",
+            "Old A",
+        )?;
+        insert_synced_event(
+            &conn,
+            "other-event",
+            &other.id,
+            "shared-google-event",
+            "Old B",
+        )?;
+
+        let delta = CalendarSyncDelta {
+            events_json: vec![serde_json::json!({
+                "id": "shared-google-event",
+                "status": "cancelled"
+            })],
+            new_sync_token: None,
+        };
+
+        let (added, updated) = apply_calendar_sync(&conn, &retained, delta)?;
+        assert_eq!(added, 0);
+        assert_eq!(updated, 0);
+
+        let retained_event = fetch_event_snapshot(&conn, "retained-event")?;
+        let other_event = fetch_event_snapshot(&conn, "other-event")?;
+        assert!(retained_event.deleted_at.is_some());
+        assert!(other_event.deleted_at.is_none());
 
         Ok(())
     }

@@ -247,6 +247,49 @@ fn calendar_crud_and_source_validation_work() {
 }
 
 #[test]
+fn duplicate_google_calendar_returns_conflict_json_error() {
+    let temp = TempDir::new().unwrap();
+
+    let first = cli_command(&temp)
+        .args([
+            "calendars",
+            "create",
+            "--name",
+            "Work",
+            "--color",
+            "#50f872",
+            "--source",
+            "google",
+            "--google-id",
+            "work@example.com",
+        ])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+
+    let duplicate = cli_command(&temp)
+        .args([
+            "calendars",
+            "create",
+            "--name",
+            "Work Again",
+            "--color",
+            "#ffaa00",
+            "--source",
+            "google",
+            "--google-id",
+            "work@example.com",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(duplicate.status.code(), Some(1));
+    let duplicate_json = read_json(&duplicate.stderr);
+    assert_eq!(duplicate_json["status"], "error");
+    assert_eq!(duplicate_json["code"], "conflict");
+}
+
+#[test]
 fn project_crud_works() {
     let temp = TempDir::new().unwrap();
 

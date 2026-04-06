@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{dag::EventDag, db, google, models};
+use crate::{
+    calendar_service::{self, CreateCalendarInput, UpdateCalendarInput},
+    dag::EventDag,
+    db, google, models,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "solverforge-calendar-cli", about = "JSON-first automation CLI")]
@@ -395,62 +399,41 @@ fn handle_calendars(conn: &Connection, action: CalendarCommand) -> Result<Value,
             &id
         )?)),
         CalendarCommand::Create(args) => {
-            let now = timestamp_now();
-            let name = non_empty(args.name, "name")?;
-            let color = non_empty(args.color, "color")?;
-            let source = calendar_source_from_arg(args.source);
-            let google_id = normalize_optional(args.google_id);
-            validate_calendar_source(&source, google_id.as_deref())?;
-
-            let calendar = models::Calendar {
-                id: Uuid::new_v4().to_string(),
-                name,
-                color,
-                source,
-                google_id,
-                visible: args.visible,
-                position: args.position,
-                created_at: now.clone(),
-                updated_at: now,
-                deleted_at: None,
-            };
-            db::insert_calendar(conn, &calendar).map_err(internal_error)?;
+            let calendar = calendar_service::create_calendar(
+                conn,
+                CreateCalendarInput {
+                    name: args.name,
+                    color: args.color,
+                    source: calendar_source_from_arg(args.source),
+                    google_id: args.google_id,
+                    visible: args.visible,
+                    position: Some(args.position),
+                },
+            )
+            .map_err(calendar_service_error)?;
             Ok(json!(calendar))
         }
         CalendarCommand::Update(args) => {
-            let mut calendar = require_resource(
-                db::get_calendar(conn, &args.id).map_err(internal_error)?,
-                "calendar",
-                &args.id,
-            )?;
-            if let Some(name) = args.name {
-                calendar.name = non_empty(name, "name")?;
-            }
-            if let Some(color) = args.color {
-                calendar.color = non_empty(color, "color")?;
-            }
-            if let Some(source) = args.source {
-                calendar.source = calendar_source_from_arg(source);
-            }
-            if let Some(visible) = args.visible {
-                calendar.visible = visible;
-            }
-            if let Some(position) = args.position {
-                calendar.position = position;
-            }
-            if args.google_id.is_some() {
-                calendar.google_id = normalize_optional(args.google_id);
-            }
-            if calendar.source == models::CalendarSource::Local {
-                calendar.google_id = None;
-            }
-            validate_calendar_source(&calendar.source, calendar.google_id.as_deref())?;
-            db::update_calendar(conn, &calendar).map_err(internal_error)?;
-            Ok(json!(require_resource(
-                db::get_calendar(conn, &args.id).map_err(internal_error)?,
-                "calendar",
-                &args.id,
-            )?))
+            let google_id = if args.google_id.is_some() {
+                Some(normalize_optional(args.google_id))
+            } else {
+                None
+            };
+
+            let calendar = calendar_service::update_calendar(
+                conn,
+                UpdateCalendarInput {
+                    id: args.id,
+                    name: args.name,
+                    color: args.color,
+                    source: args.source.map(calendar_source_from_arg),
+                    google_id,
+                    visible: args.visible,
+                    position: args.position,
+                },
+            )
+            .map_err(calendar_service_error)?;
+            Ok(json!(calendar))
         }
         CalendarCommand::Delete(args) => {
             let tx = conn.unchecked_transaction().map_err(internal_error)?;
@@ -910,6 +893,19 @@ fn internal_error(err: impl std::fmt::Display) -> CliError {
     CliError::internal(err.to_string())
 }
 
+fn calendar_service_error(err: calendar_service::CalendarServiceError) -> CliError {
+    match err {
+        calendar_service::CalendarServiceError::NotFound { resource, id } => {
+            CliError::not_found(resource, &id)
+        }
+        calendar_service::CalendarServiceError::Validation(message) => {
+            CliError::validation(message)
+        }
+        calendar_service::CalendarServiceError::Conflict(message) => CliError::conflict(message),
+        calendar_service::CalendarServiceError::Internal(message) => CliError::internal(message),
+    }
+}
+
 fn require_resource<T>(resource: Option<T>, name: &'static str, id: &str) -> Result<T, CliError> {
     resource.ok_or_else(|| CliError::not_found(name, id))
 }
@@ -980,21 +976,6 @@ fn validate_event_datetime(start_at: &str, end_at: &str) -> Result<(), CliError>
         ));
     }
     Ok(())
-}
-
-fn validate_calendar_source(
-    source: &models::CalendarSource,
-    google_id: Option<&str>,
-) -> Result<(), CliError> {
-    match source {
-        models::CalendarSource::Google if google_id.is_none() => {
-            Err(CliError::validation("google calendars require --google-id"))
-        }
-        models::CalendarSource::Local if google_id.is_some() => Err(CliError::validation(
-            "local calendars cannot set --google-id",
-        )),
-        _ => Ok(()),
-    }
 }
 
 fn ensure_calendar_exists(conn: &Connection, calendar_id: &str) -> Result<(), CliError> {

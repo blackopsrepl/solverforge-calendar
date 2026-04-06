@@ -19,9 +19,9 @@ This repository contains a Linux-first Rust desktop calendar with two supported 
 
 Direct cargo commands used in CI:
 
-- `cargo fmt --all -- --check`
+- `cargo fmt --all --check`
 - `cargo clippy --bins --tests -- -D warnings`
-- `cargo build --bins`
+- `cargo build --release --bins`
 - `cargo test`
 
 ## Repo map
@@ -29,8 +29,9 @@ Direct cargo commands used in CI:
 - `src/main.rs`: TUI entrypoint
 - `src/bin/solverforge-calendar-cli.rs`: CLI entrypoint
 - `src/cli.rs`: typed CLI parsing, JSON responses, command dispatch, CLI tests
+- `src/calendar_service.rs`: shared calendar validation, Google import rules, and update semantics
 - `src/db.rs`: SQLite schema, migrations, CRUD helpers, default-calendar recovery
-- `src/google/`: OAuth, sync fetch/apply logic, Google event translation
+- `src/google/`: OAuth, calendar discovery, sync fetch/apply logic, Google event translation
 - `tests/cli.rs`: binary-level CLI integration tests
 - `docs/wireframes/`: ASCII wireframes for the TUI and CLI surfaces
 

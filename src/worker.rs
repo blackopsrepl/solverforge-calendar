@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use anyhow::Result;
 
@@ -15,6 +15,7 @@ pub enum WorkerResult {
     DependenciesLoaded(Vec<EventDependency>),
     EventSaved(Box<Event>),
     EventDeleted(String),
+    GoogleAuthComplete(Arc<crate::google::auth::GoogleClient>),
     GoogleSyncComplete {
         events_added: usize,
         events_updated: usize,
@@ -173,6 +174,23 @@ impl Worker {
                 }
                 Err(e) => {
                     let _ = tx.send(WorkerResult::Error(e.to_string()));
+                }
+            }
+        });
+    }
+
+    pub fn complete_google_auth(&self, client_id: String, client_secret: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match crate::google::auth::authorize_and_persist(&client_id, &client_secret).await {
+                Ok(client) => {
+                    let _ = tx.send(WorkerResult::GoogleAuthComplete(Arc::new(client)));
+                }
+                Err(e) => {
+                    let _ = tx.send(WorkerResult::Error(format!(
+                        "Google authorization failed: {}",
+                        e
+                    )));
                 }
             }
         });

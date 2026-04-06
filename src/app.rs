@@ -333,6 +333,11 @@ impl App {
                 self.events.retain(|e| e.id != id);
                 self.set_status("Event deleted.", false);
             }
+            WorkerResult::GoogleAuthComplete(client) => {
+                self.google_client = Some(client);
+                self.set_status("Google authorization complete.", false);
+                self.loading = false;
+            }
             WorkerResult::GoogleSyncComplete {
                 events_added,
                 events_updated,
@@ -808,26 +813,10 @@ impl App {
             return;
         }
 
-        // Save credentials to keyring
-        if let Err(e) =
-            crate::google::auth::GoogleClient::save_credentials(&client_id, &client_secret)
-        {
-            self.set_status(format!("Keyring error: {}", e), true);
-            return;
-        }
-
         self.set_status("Opening browser for Google authorization…", false);
         self.view = View::Month;
-
-        // Run OAuth flow in background
-        // In a full impl, we'd have a dedicated WorkerResult::GoogleAuthComplete variant
-        tokio::spawn(async move {
-            let result = crate::google::auth::run_oauth_flow(&client_id, &client_secret).await;
-            if let Err(e) = result {
-                eprintln!("OAuth flow error: {}", e);
-            }
-        });
-
+        self.loading = true;
+        self.worker.complete_google_auth(client_id, client_secret);
         self.set_status("Waiting for browser authorization…", false);
     }
 

@@ -39,8 +39,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Run release bar
-        run: make pre-release
+      - name: Run clippy
+        run: cargo clippy --bins --tests -- -D warnings
+
+      - name: Build release binaries
+        run: cargo build --release --bins
+
+      - name: Run tests
+        run: cargo test
 
       - name: Smoke test CLI entrypoint
         run: cargo run --bin solverforge-calendar-cli -- calendars list

@@ -8,6 +8,7 @@ const KEYRING_REFRESH_TOKEN_KEY: &str = "google_refresh_token";
 
 /* Opaque client handle — used by the sync module to make API calls. */
 /* Wraps credentials needed to build an authenticated Hub. */
+#[derive(Debug, Clone)]
 pub struct GoogleClient {
     pub client_id: String,
     pub client_secret: String,
@@ -38,6 +39,34 @@ impl GoogleClient {
         write_keyring(KEYRING_CLIENT_SECRET_KEY, client_secret)?;
         Ok(())
     }
+
+    pub fn save_refresh_token(refresh_token: &str) -> Result<()> {
+        write_keyring(KEYRING_REFRESH_TOKEN_KEY, refresh_token)
+    }
+
+    pub async fn refresh_access_token(&self) -> Result<String> {
+        let http = reqwest::Client::new();
+        let params = [
+            ("client_id", self.client_id.as_str()),
+            ("client_secret", self.client_secret.as_str()),
+            ("refresh_token", self.refresh_token.as_str()),
+            ("grant_type", "refresh_token"),
+        ];
+        let resp: serde_json::Value = http
+            .post("https://oauth2.googleapis.com/token")
+            .form(&params)
+            .send()
+            .await
+            .context("token refresh request failed")?
+            .json()
+            .await
+            .context("token refresh JSON parse failed")?;
+
+        resp["access_token"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("no access_token in refresh response: {:?}", resp))
+    }
 }
 
 fn read_keyring(key: &str) -> Option<String> {
@@ -53,6 +82,17 @@ fn write_keyring(key: &str, value: &str) -> Result<()> {
 
 /* Run the OAuth2 authorization flow. Opens the browser and waits for the callback. */
 /* Returns the refresh token on success. */
+pub async fn authorize_and_persist(client_id: &str, client_secret: &str) -> Result<GoogleClient> {
+    GoogleClient::save_credentials(client_id, client_secret)?;
+    let refresh_token = run_oauth_flow(client_id, client_secret).await?;
+    GoogleClient::save_refresh_token(&refresh_token)?;
+    Ok(GoogleClient {
+        client_id: client_id.to_string(),
+        client_secret: client_secret.to_string(),
+        refresh_token,
+    })
+}
+
 pub async fn run_oauth_flow(client_id: &str, client_secret: &str) -> Result<String> {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;

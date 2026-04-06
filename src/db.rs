@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 
-const SCHEMA_VERSION: &str = "20260101000001";
+const MIGRATION_V1: &str = "20260101000001";
+const MIGRATION_V2: &str = "20260406000001";
 
 /* Path to the calendar database. */
 pub fn db_path() -> PathBuf {
@@ -50,23 +51,35 @@ fn migrate(conn: &Connection) -> Result<()> {
         );",
     )?;
 
-    let applied: bool = conn
+    if !migration_applied(conn, MIGRATION_V1)? {
+        migrate_v1(conn)?;
+        record_migration(conn, MIGRATION_V1)?;
+    }
+
+    if !migration_applied(conn, MIGRATION_V2)? {
+        migrate_v2(conn)?;
+        record_migration(conn, MIGRATION_V2)?;
+    }
+
+    Ok(())
+}
+
+fn migration_applied(conn: &Connection, version: &str) -> Result<bool> {
+    Ok(conn
         .query_row(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-            [SCHEMA_VERSION],
+            [version],
             |row| row.get::<_, i64>(0),
         )
         .unwrap_or(0)
-        > 0;
+        > 0)
+}
 
-    if !applied {
-        migrate_v1(conn)?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
-            [SCHEMA_VERSION],
-        )?;
-    }
-
+fn record_migration(conn: &Connection, version: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+        [version],
+    )?;
     Ok(())
 }
 
@@ -171,9 +184,49 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_calendars_google_id_unique
+            ON calendars(google_id)
+            WHERE deleted_at IS NULL
+              AND source = 'google'
+              AND google_id IS NOT NULL;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_calendar_google_id_unique
+            ON events(calendar_id, google_id)
+            WHERE deleted_at IS NULL
+              AND google_id IS NOT NULL;
+        ",
+    )?;
+
+    Ok(())
+}
+
 // ── CRUD helpers ─────────────────────────────────────────────────────
 
 use crate::models::{Calendar, CalendarSource, DependencyType, Event, EventDependency, Project};
+
+fn calendar_from_row(row: &Row<'_>) -> rusqlite::Result<Calendar> {
+    let source_str: String = row.get(3)?;
+    let source = if source_str == "google" {
+        CalendarSource::Google
+    } else {
+        CalendarSource::Local
+    };
+    Ok(Calendar {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        color: row.get(2)?,
+        source,
+        google_id: row.get(4)?,
+        visible: row.get::<_, i64>(5)? != 0,
+        position: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+        deleted_at: row.get(9)?,
+    })
+}
 
 pub fn load_calendars(conn: &Connection) -> Result<Vec<Calendar>> {
     let mut stmt = conn.prepare(
@@ -183,26 +236,7 @@ pub fn load_calendars(conn: &Connection) -> Result<Vec<Calendar>> {
          WHERE deleted_at IS NULL
          ORDER BY position, name",
     )?;
-    let rows = stmt.query_map([], |row| {
-        let source_str: String = row.get(3)?;
-        let source = if source_str == "google" {
-            CalendarSource::Google
-        } else {
-            CalendarSource::Local
-        };
-        Ok(Calendar {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            color: row.get(2)?,
-            source,
-            google_id: row.get(4)?,
-            visible: row.get::<_, i64>(5)? != 0,
-            position: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
-            deleted_at: row.get(9)?,
-        })
-    })?;
+    let rows = stmt.query_map([], calendar_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -403,29 +437,28 @@ pub fn get_calendar(conn: &Connection, calendar_id: &str) -> Result<Option<Calen
     )?;
 
     let calendar = stmt
-        .query_row([calendar_id], |row| {
-            let source_str: String = row.get(3)?;
-            let source = if source_str == "google" {
-                CalendarSource::Google
-            } else {
-                CalendarSource::Local
-            };
-            Ok(Calendar {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                color: row.get(2)?,
-                source,
-                google_id: row.get(4)?,
-                visible: row.get::<_, i64>(5)? != 0,
-                position: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                deleted_at: row.get(9)?,
-            })
-        })
+        .query_row([calendar_id], calendar_from_row)
         .optional()?;
 
     Ok(calendar)
+}
+
+pub fn get_google_calendar_by_google_id(
+    conn: &Connection,
+    google_id: &str,
+) -> Result<Option<Calendar>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, color, source, google_id, visible, position,
+                created_at, updated_at, deleted_at
+         FROM calendars
+         WHERE google_id = ?1
+           AND source = 'google'
+           AND deleted_at IS NULL",
+    )?;
+
+    stmt.query_row([google_id], calendar_from_row)
+        .optional()
+        .map_err(Into::into)
 }
 
 pub fn insert_calendar(conn: &Connection, calendar: &Calendar) -> Result<()> {
@@ -481,6 +514,15 @@ pub fn soft_delete_calendar(conn: &Connection, calendar_id: &str) -> Result<()> 
         [calendar_id, &now],
     )?;
     Ok(())
+}
+
+pub fn next_calendar_position(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM calendars WHERE deleted_at IS NULL",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 pub fn get_project(conn: &Connection, project_id: &str) -> Result<Option<Project>> {
@@ -709,6 +751,21 @@ pub fn delete_sync_token(conn: &Connection, calendar_id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn detach_google_sync_state_for_calendar(conn: &Connection, calendar_id: &str) -> Result<()> {
+    let now = now_timestamp();
+    conn.execute(
+        "UPDATE events
+         SET google_id = NULL,
+             google_etag = NULL,
+             updated_at = ?2
+         WHERE calendar_id = ?1
+           AND (google_id IS NOT NULL OR google_etag IS NOT NULL)",
+        [calendar_id, &now],
+    )?;
+    delete_sync_token(conn, calendar_id)?;
+    Ok(())
+}
+
 pub fn upsert_sync_token(conn: &Connection, calendar_id: &str, token: &str) -> Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -748,6 +805,7 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection as SqliteConnection;
     use tempfile::TempDir;
 
     #[test]
@@ -767,5 +825,271 @@ mod tests {
         let calendars = load_calendars(&reopened).unwrap();
         assert_eq!(calendars.len(), 1);
         assert_eq!(calendars[0].name, "Personal");
+    }
+
+    #[test]
+    fn open_at_applies_google_sync_unique_indexes_to_existing_v1_db() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("calendar.db");
+
+        {
+            let conn = SqliteConnection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA foreign_keys = ON;
+                 PRAGMA synchronous = NORMAL;",
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version TEXT PRIMARY KEY
+                );",
+            )
+            .unwrap();
+            migrate_v1(&conn).unwrap();
+            record_migration(&conn, MIGRATION_V1).unwrap();
+        }
+
+        let reopened = open_at(&db_path).unwrap();
+        let indexes = reopened
+            .prepare("PRAGMA index_list('calendars')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let event_indexes = reopened
+            .prepare("PRAGMA index_list('events')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert!(indexes
+            .iter()
+            .any(|index| index == "idx_calendars_google_id_unique"));
+        assert!(event_indexes
+            .iter()
+            .any(|index| index == "idx_events_calendar_google_id_unique"));
+        assert!(migration_applied(&reopened, MIGRATION_V2).unwrap());
+    }
+
+    #[test]
+    fn google_calendar_unique_index_blocks_duplicate_active_rows() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("calendar.db");
+        let conn = open_at(&db_path).unwrap();
+        let now = "2026-04-06 10:00:00".to_string();
+
+        insert_calendar(
+            &conn,
+            &Calendar {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "Work".to_string(),
+                color: "#50f872".to_string(),
+                source: CalendarSource::Google,
+                google_id: Some("work@example.com".to_string()),
+                visible: true,
+                position: 1,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+
+        let err = insert_calendar(
+            &conn,
+            &Calendar {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "Work Copy".to_string(),
+                color: "#ffaa00".to_string(),
+                source: CalendarSource::Google,
+                google_id: Some("work@example.com".to_string()),
+                visible: true,
+                position: 2,
+                created_at: now.clone(),
+                updated_at: now,
+                deleted_at: None,
+            },
+        )
+        .unwrap_err();
+
+        let sqlite_err = err.downcast_ref::<rusqlite::Error>().unwrap();
+        match sqlite_err {
+            rusqlite::Error::SqliteFailure(code, _) => {
+                assert_eq!(code.code, rusqlite::ErrorCode::ConstraintViolation);
+            }
+            other => panic!("expected sqlite constraint violation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_google_id_unique_index_is_scoped_to_calendar() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("calendar.db");
+        let conn = open_at(&db_path).unwrap();
+        let now = "2026-04-06 10:00:00".to_string();
+        let first_calendar = Calendar {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Work".to_string(),
+            color: "#50f872".to_string(),
+            source: CalendarSource::Google,
+            google_id: Some("work@example.com".to_string()),
+            visible: true,
+            position: 1,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            deleted_at: None,
+        };
+        let second_calendar = Calendar {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Personal".to_string(),
+            color: "#ffaa00".to_string(),
+            source: CalendarSource::Google,
+            google_id: Some("personal@example.com".to_string()),
+            visible: true,
+            position: 2,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            deleted_at: None,
+        };
+        insert_calendar(&conn, &first_calendar).unwrap();
+        insert_calendar(&conn, &second_calendar).unwrap();
+
+        let first_event = Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            calendar_id: first_calendar.id.clone(),
+            project_id: None,
+            title: "Sync target".to_string(),
+            description: None,
+            location: None,
+            start_at: "2026-04-06 10:00:00".to_string(),
+            end_at: "2026-04-06 11:00:00".to_string(),
+            all_day: false,
+            rrule: None,
+            google_id: Some("shared-google-event".to_string()),
+            google_etag: Some("\"etag-1\"".to_string()),
+            reminder_minutes: None,
+            timezone: "UTC".to_string(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            deleted_at: None,
+        };
+        insert_event(&conn, &first_event).unwrap();
+
+        let duplicate_same_calendar = insert_event(
+            &conn,
+            &Event {
+                id: uuid::Uuid::new_v4().to_string(),
+                calendar_id: first_calendar.id.clone(),
+                project_id: None,
+                title: "Duplicate".to_string(),
+                description: None,
+                location: None,
+                start_at: "2026-04-06 12:00:00".to_string(),
+                end_at: "2026-04-06 13:00:00".to_string(),
+                all_day: false,
+                rrule: None,
+                google_id: Some("shared-google-event".to_string()),
+                google_etag: Some("\"etag-2\"".to_string()),
+                reminder_minutes: None,
+                timezone: "UTC".to_string(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                deleted_at: None,
+            },
+        )
+        .unwrap_err();
+        let sqlite_err = duplicate_same_calendar
+            .downcast_ref::<rusqlite::Error>()
+            .unwrap();
+        match sqlite_err {
+            rusqlite::Error::SqliteFailure(code, _) => {
+                assert_eq!(code.code, rusqlite::ErrorCode::ConstraintViolation);
+            }
+            other => panic!("expected sqlite constraint violation, got {other:?}"),
+        }
+
+        insert_event(
+            &conn,
+            &Event {
+                id: uuid::Uuid::new_v4().to_string(),
+                calendar_id: second_calendar.id.clone(),
+                project_id: None,
+                title: "Allowed in other calendar".to_string(),
+                description: None,
+                location: None,
+                start_at: "2026-04-06 12:00:00".to_string(),
+                end_at: "2026-04-06 13:00:00".to_string(),
+                all_day: false,
+                rrule: None,
+                google_id: Some("shared-google-event".to_string()),
+                google_etag: Some("\"etag-3\"".to_string()),
+                reminder_minutes: None,
+                timezone: "UTC".to_string(),
+                created_at: now.clone(),
+                updated_at: now,
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn detach_google_sync_state_for_calendar_clears_event_sync_fields_and_token() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("calendar.db");
+        let conn = open_at(&db_path).unwrap();
+        let now = "2026-04-06 10:00:00".to_string();
+        let calendar = Calendar {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Work".to_string(),
+            color: "#50f872".to_string(),
+            source: CalendarSource::Google,
+            google_id: Some("work@example.com".to_string()),
+            visible: true,
+            position: 1,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            deleted_at: None,
+        };
+        insert_calendar(&conn, &calendar).unwrap();
+        insert_event(
+            &conn,
+            &Event {
+                id: uuid::Uuid::new_v4().to_string(),
+                calendar_id: calendar.id.clone(),
+                project_id: None,
+                title: "Imported".to_string(),
+                description: None,
+                location: None,
+                start_at: "2026-04-06 10:00:00".to_string(),
+                end_at: "2026-04-06 11:00:00".to_string(),
+                all_day: false,
+                rrule: None,
+                google_id: Some("google-event-1".to_string()),
+                google_etag: Some("\"etag-1\"".to_string()),
+                reminder_minutes: None,
+                timezone: "UTC".to_string(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                deleted_at: None,
+            },
+        )
+        .unwrap();
+        upsert_sync_token(&conn, &calendar.id, "sync-token-1").unwrap();
+
+        detach_google_sync_state_for_calendar(&conn, &calendar.id).unwrap();
+
+        let detached_event = load_events(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.calendar_id == calendar.id)
+            .unwrap();
+        assert_eq!(detached_event.google_id, None);
+        assert_eq!(detached_event.google_etag, None);
+        assert_eq!(get_sync_token(&conn, &calendar.id).unwrap(), None);
     }
 }

@@ -7,7 +7,7 @@
   <br />
 
   [![CI](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml/badge.svg?style=for-the-badge)](https://github.com/blackopsrepl/solverforge-calendar/actions/workflows/ci.yml)
-  [![Version](https://img.shields.io/badge/version-v0.2.0-00E6A8?style=for-the-badge)](https://github.com/blackopsrepl/solverforge-calendar)
+  [![Version](https://img.shields.io/badge/version-v0.3.0-00E6A8?style=for-the-badge)](https://github.com/blackopsrepl/solverforge-calendar)
   [![Rust](https://img.shields.io/badge/rust-stable-orange?style=for-the-badge)](https://www.rust-lang.org)
   [![Built With Ratatui](https://img.shields.io/badge/built%20with-ratatui-5A54FF?style=for-the-badge)](https://ratatui.rs/)
 
@@ -182,6 +182,7 @@ solverforge-calendar/
     ├── keys.rs            # (View, KeyEvent) → Action dispatch
     ├── worker.rs          # Background thread pool, WorkerResult enum
     ├── cli.rs             # Typed JSON CLI handlers and shared automation logic
+    ├── calendar_service.rs # Shared calendar validation and Google import rules
     ├── event.rs           # Crossterm event handling
     ├── models.rs          # Calendar, Event, Project, EventDependency structs
     ├── db.rs              # SQLite CRUD, schema migrations
@@ -192,6 +193,7 @@ solverforge-calendar/
     ├── ical.rs            # iCal import/export
     ├── google/
     │   ├── auth.rs        # OAuth via OS keyring
+    │   ├── discovery.rs   # Google Calendar list discovery/import filtering
     │   ├── sync.rs        # Incremental Google Calendar API sync
     │   └── types.rs       # Google JSON → local Event conversion
     ├── bin/
